@@ -17,8 +17,12 @@ struct TtsResponse {
 pub async fn speak(text: &str, voice: &str) -> Result<String> {
     let client = Client::new();
 
+    let base = std::env::var("VOICEFORGE_TTS_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:5555".to_string());
+    let url = format!("{}/tts", base.trim_end_matches('/'));
+
     let response = client
-        .post("http://localhost:5000/tts")
+        .post(&url)
         .json(&TtsRequest { text, voice })
         .send()
         .await

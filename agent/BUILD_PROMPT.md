@@ -16,7 +16,7 @@ Implement a Rust CLI called `voiceforge` and a Python TTS server.
 2. `voiceforge say --text "..." --voice angry_duck`
 3. `voiceforge run -- <command>`
 4. Cache audio by SHA256 hash.
-5. Call local TTS server at `http://localhost:5000/tts`.
+5. Call local TTS server at `http://127.0.0.1:5555/tts` (overridable via `VOICEFORGE_TTS_URL`).
 6. Play returned wav using rodio.
 7. Load preset JSON files.
 8. Add daemon mode with a simple event loop.

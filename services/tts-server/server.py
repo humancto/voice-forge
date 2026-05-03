@@ -103,6 +103,7 @@ def tts():
     return jsonify({"audio_path": str(out_path), "cache_hit": False})
 
 if __name__ == "__main__":
-    print("VoiceForge TTS server starting on http://localhost:5000")
+    port = int(os.environ.get("VOICEFORGE_TTS_PORT", "5555"))
+    print(f"VoiceForge TTS server starting on http://127.0.0.1:{port}")
     print("Engine:", os.environ.get("VOICEFORGE_TTS_ENGINE", "fallback"))
-    app.run(host="127.0.0.1", port=5000)
+    app.run(host="127.0.0.1", port=port)
