@@ -1,0 +1,33 @@
+{
+  "build_failed": {
+    "voice": "angry_duck",
+    "lines": [
+      "The build failed again.",
+      "That did not go well.",
+      "The compiler has chosen violence."
+    ]
+  },
+  "build_success": {
+    "voice": "hype_narrator",
+    "lines": [
+      "Build completed successfully.",
+      "That actually worked.",
+      "Clean build. Beautiful."
+    ]
+  },
+  "git_commit": {
+    "voice": "sarcastic_goblin",
+    "lines": [
+      "Commit saved.",
+      "Another tiny monument to optimism.",
+      "Your changes are now part of history."
+    ]
+  },
+  "daemon_alive": {
+    "voice": "tiny_robot",
+    "lines": [
+      "VoiceForge is still running.",
+      "Daemon heartbeat confirmed."
+    ]
+  }
+}

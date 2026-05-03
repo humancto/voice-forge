@@ -1,0 +1,38 @@
+# Rust
+target/
+**/*.rs.bk
+Cargo.lock
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# VoiceForge runtime artifacts (never commit user audio or embeddings)
+services/tts-server/audio_cache/
+services/tts-server/voices/
+services/tts-server/embeddings/
+~/.voiceforge/
+
+# Test fixtures (downloaded on demand, not committed)
+tests/fixtures/*.wav
+tests/fixtures/*.mp3
+tests/fixtures/*.m4a
+tests/fixtures/*.ogg
+tests/fixtures/*.flac
+tests/fixtures/*.pt
+tests/fixtures/*.aiff
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Planning scratch (not shipped)
+.planning/scratch/
