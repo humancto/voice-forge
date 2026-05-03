@@ -1,10 +1,12 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 mod audio;
 mod cache;
 mod config;
 mod daemon;
+mod ingest;
 mod runner;
 mod tts_client;
 
@@ -30,6 +32,14 @@ enum Commands {
     },
     Daemon,
     Voices,
+    /// Transcode any audio source into a canonical XTTS-ready WAV
+    /// (22050 Hz mono 16-bit PCM, 10–60 s).
+    Ingest {
+        /// Path to the source audio (wav/mp3/m4a/ogg/flac/aiff/webm/...).
+        input: PathBuf,
+        /// Path to the output WAV. Parent dirs are created if missing.
+        output: PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -52,6 +62,19 @@ async fn main() -> Result<()> {
             for voice in voices {
                 println!("{} - {}", voice.id, voice.display_name.unwrap_or_else(|| voice.id.clone()));
             }
+        }
+        Commands::Ingest { input, output } => {
+            let report = ingest::ingest(&input, &output, &ingest::IngestConfig::default())?;
+            println!(
+                "ingested {} -> {} ({} Hz, {} ch, {} bit, {}, {:.2}s)",
+                input.display(),
+                output.display(),
+                report.sample_rate,
+                report.channels,
+                report.bits_per_sample,
+                report.codec,
+                report.duration_seconds,
+            );
         }
     }
 

@@ -32,7 +32,8 @@ Each unchecked item is one PR with tests. Expert agent (auto-detected from stack
 ## Phase 2 — Clone from anything
 
 - [ ] **2.1 `voiceforge install-cloning`: sets up Python venv + XTTS, smoke-tests, writes a marker. Until run, clone commands fail closed with a clear message.**
-- [ ] **2.2 Audio ingest pipeline: accept wav, mp3, m4a, ogg, flac. Transcode to 22kHz mono wav via `ffmpeg`. Validate 10–60s duration, reject silence.**
+- [ ] **2.2 Audio ingest pipeline: accept wav, mp3, m4a, ogg, flac, aiff, webm. Transcode to 22050Hz mono 16-bit pcm via `ffmpeg`. Validate 10–60s duration. (Silence rejection deferred to 2.2.1.)**
+- [ ] **2.2.1 Reject silent input + apply loudnorm (`-af loudnorm=I=-16:TP=-1.5:LRA=11`) to ingested audio. Cheap follow-up to 2.2; gated separately so the base pipeline can ship first.**
 - [ ] **2.3 URL ingest: any URL `yt-dlp` can resolve (YouTube, Vimeo, Twitter/X, TikTok, direct media). Pipes into the audio pipeline.**
 - [ ] **2.4 `voiceforge record <name>`: cpal mic capture, 20–30s, live waveform meter + countdown, writes to `~/.voiceforge/voices/<name>.wav`.**
 - [ ] **2.5 `voiceforge clone <source> as <name>`: source = local path or URL. Runs the ingest pipeline, calls Python `/embed`, writes preset JSON, registers the voice. One command, anything in.**
