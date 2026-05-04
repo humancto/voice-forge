@@ -36,3 +36,12 @@ tests/fixtures/*.aiff
 
 # Planning scratch (not shipped)
 .planning/scratch/
+
+# Pack rendering. Outputs (.work/, render.log, wav/) are never committed
+# to THIS repo — the main voice-forge repo only ships the rendering
+# pipeline (manifests, render_pack.py, the doc). Actual pack distribution
+# happens through the separate voice-forge-packs repo (PR-based, takedown-
+# friendly, educational-use disclaimer per pack). See docs/PACK_RENDERING.md.
+packs/*/.work/
+packs/*/render.log
+packs/*/wav/

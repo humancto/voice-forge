@@ -569,6 +569,27 @@ ok: 9   warn: 0   error: 0</div>
       <p style="margin-top: 32px;">three engines, one façade. <strong>Engine::Embedded</strong> shells to <code>say</code> / <code>espeak-ng</code> for the default voice (no Python required). <strong>Engine::Server</strong> talks to a Flask server when <code>VOICEFORGE_TTS_URL</code> is set. <strong>Engine::Cloning</strong> spawns the long-lived NDJSON child. <code>Engine::speak(text, voice)</code> dispatches per-call based on whether the voice name matches a cloned profile.</p>
     </section>
 
+    <!-- ========== PRE-RENDERED PACKS ========== -->
+    <section id="packs">
+      <div class="section-tag"><span class="num">04.5</span> <span>quality tier</span> <span class="rule"></span> <span>pre-rendered packs</span></div>
+      <h2>character voices. <span class="accent">actually recognizable.</span></h2>
+      <p>live cloning is fast and works for arbitrary text — but on stylized cartoon characters (Peter Griffin, Stewie, Quagmire) GPT-SoVITS v2 hits a quality ceiling. for terminal feedback (a fixed set of events) we render a pack of phrases <em>once</em>, on a beefy model — <strong>fish-speech S2 Pro</strong> — and ship the WAVs. runtime playback is sub-100ms.</p>
+
+<div class="diagram">  <span class="mute">one-time</span>                                       <span class="mute">runtime, every event</span>
+  ┌──────────────────────────────────┐               ┌──────────────────────────┐
+  <span class="acid">│  fish-speech S2 Pro              │</span>     ────►      <span class="acid">│  voiceforge play         │</span>
+  <span class="acid">│  (research-license, OSS)         │</span>               <span class="acid">│  --pack peter            │</span>
+  <span class="acid">│                                  │</span>               <span class="acid">│  --event tests_passed    │</span>
+  <span class="acid">│  60s reference + prompt text     │</span>               <span class="acid">│                          │</span>
+  <span class="acid">│  → 13 × peter_event.wav          │</span>               <span class="acid">│  → ~50ms WAV playback    │</span>
+  └──────────────────────────────────┘               └──────────────────────────┘
+       <span class="mute">~10 min/phrase on Mac CPU</span>                          <span class="mute">no synth, no model load</span>
+       <span class="mute">~5 sec/phrase on a real GPU</span></div>
+
+      <p style="margin-top: 32px;"><strong>anyone can render their own packs.</strong> the full pipeline is documented in <a href="https://github.com/humancto/voice-forge/blob/main/docs/PACK_RENDERING.md"><code>docs/PACK_RENDERING.md</code></a> — clone any character voice, locally, in under an hour, no GPU required. CPU works; renting a GPU box for 10 minutes makes it a one-coffee operation.</p>
+      <p style="margin-top: 14px; color: var(--mute);">community packs (peter, stewie, quagmire, trump, obama) ship as a separate index — educational/research/local-testing use only, takedown-friendly. the main repo stays clean.</p>
+    </section>
+
     <!-- ========== PRIVACY ========== -->
     <section id="privacy">
       <div class="section-tag"><span class="num">05</span> <span>privacy</span> <span class="rule"></span> <span>what stays on your machine</span></div>

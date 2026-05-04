@@ -36,6 +36,38 @@ voiceforge run -- npm test
 
 Bring **any clean ≥60-second audio file** of the voice you want — a Family Guy clip you transcoded, a podcast segment, a recording of yourself. VoiceForge runs the proven multi-aux-ref recipe (1 main + 5 aux × 10 s, Whisper-transcribed) through **GPT-SoVITS v2** locally and the next time your build dies, that voice says so.
 
+### Two quality tiers
+
+|                    | **Live cloning** (default) | **Pre-rendered packs**                                       |
+| ------------------ | -------------------------- | ------------------------------------------------------------ |
+| Backend            | GPT-SoVITS v2              | fish-speech S2 Pro                                           |
+| Speaks             | arbitrary text             | curated phrases (build_failed, tests_passed, …)              |
+| Latency            | ~2 sec / phrase            | **~50 ms** (just plays a WAV)                                |
+| Quality on cartoon | OK                         | **genuinely recognizable** (Peter Griffin, Stewie, Quagmire) |
+| Render cost        | per-phrase at runtime      | one-time, ~10 min/phrase on a Mac CPU                        |
+| GPU needed?        | no                         | no — CPU works, GPU is faster                                |
+
+**For arbitrary text you write yourself, use live cloning.** For terminal feedback (a fixed set of events) where you want best-in-class character voice quality, **render a pack once, ship the WAVs**. Anyone can render their own packs locally — see [`docs/PACK_RENDERING.md`](docs/PACK_RENDERING.md).
+
+### Plug into any AI coding agent
+
+VoiceForge is designed to be invoked from agent hooks (Claude Code, Cursor, Codex, Continue, Aider, etc.). Any agent that can run a shell command on a tool-use event can speak through VoiceForge:
+
+```bash
+# Claude Code post-tool-use hook (example)
+voiceforge say --voice peter --text "Tests passed."
+
+# Or, with a pre-rendered pack — sub-100ms WAV playback (no synth):
+voiceforge play --pack peter --event tests_passed      # roadmap 6.5
+
+# Or pipe structured JSON events from any source:
+echo '{"event":"tests_passed"}' | voiceforge hook      # roadmap 3.3
+```
+
+`say` synthesizes from text on demand. `play` looks up a pre-rendered WAV in an installed pack and plays it directly — no model load, no synth call. `hook` is the JSON event-stream entry point for agent integrations (a different concept from `voiceforge ingest`, which transcodes audio sources).
+
+When your agent is doing 20 minutes of background work and finally finishes a deploy, you hear Peter announce it from the kitchen. That's the whole pitch.
+
 ## Why
 
 LLM coding agents are turning terminals into long-running, conversational

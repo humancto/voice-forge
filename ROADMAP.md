@@ -44,7 +44,7 @@ Each unchecked item is one PR with tests. Expert agent (auto-detected from stack
 
 - [ ] **3.1 `voiceforge shell-init` for zsh + bash: `preexec`/`precmd` hooks fire daemon events for commands over a configurable threshold.**
 - [ ] **3.2 `voiceforge install git-hooks`: `post-commit`, `post-merge`, `post-rewrite`, `pre-push` send daemon events. Idempotent, with uninstaller.**
-- [ ] **3.3 `voiceforge ingest`: reads JSON Lines from stdin, forwards to daemon. Lets Claude Code / Codex / Cursor pipe their hook events in.**
+- [ ] **3.3 `voiceforge hook`: reads JSON Lines from stdin, forwards to daemon. Lets Claude Code / Codex / Cursor pipe their hook events in. Distinct from `voiceforge ingest` (audio transcoder) — different surface, different concept.**
 - [ ] **3.4 `voiceforge watch <path>`: speaks on filesystem changes via `notify`.**
 - [ ] **3.5 macOS notification bridge: `osascript` notification mirrors every spoken line.**
 
@@ -71,4 +71,4 @@ Each unchecked item is one PR with tests. Expert agent (auto-detected from stack
 - [ ] **6.2 `voiceforge pack {list,install,remove,info}` subcommand. Pulls index from a separate repo (e.g. `humancto/voice-forge-packs`) over HTTPS, sha256-verifies, extracts to `~/.voiceforge/packs/<name>/`.**
 - [ ] **6.3 Static GitHub-hosted pack index + GitHub Pages JSON (`packs.json`). PR-based pack additions; CODEOWNERS gate; takedown automation.**
 - [ ] **6.4 Initial pack release: 5 voices (peter, obama, stewie, quagmire, trump) × 20 events. "Educational, research, and local-testing use only" disclaimer in every pack manifest + repo README. Takedown policy.**
-- [ ] **6.5 `voiceforge say --pack <name> --event <id>` for direct pack playback (sub-100ms, no synth). Falls back to live cloning when pack doesn't have the event.**
+- [ ] **6.5 `voiceforge play --pack <name> --event <id>` for direct pack playback (sub-100ms, no synth). Separate subcommand from `say` because pack lookup bypasses the TTS engine entirely — different latency profile, different failure modes. Falls back to `say --voice <name>` synthesis when the pack doesn't have the event.**
