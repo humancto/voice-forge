@@ -127,3 +127,31 @@ jobs:
         # the matrix-level apt/brew steps above. Exercises the script
         # against both ubuntu-24.04 and macos-14 every PR.
         run: bash tests/install/smoke.sh
+
+      - name: install_cloning.sh smoke (dry-run, macOS only)
+        # The cloning installer is macOS arm64 only for now (item 2.1.1
+        # ports Linux). Dry-run exercises platform detection + step
+        # ordering + TOML marker write without doing the 3 GB real install.
+        if: runner.os == 'macOS'
+        run: bash tests/install/install_cloning_smoke.sh
+
+      - name: install_cloning.sh bails cleanly on Linux
+        # On Linux it must exit non-zero with a clear message; the
+        # smoke test asserts the bail branch.
+        if: runner.os == 'Linux'
+        env:
+          VOICEFORGE_INSTALL_CLONING_DRY_RUN: "1"
+          VOICEFORGE_HOME: /tmp/vf-ic-linux-test
+        run: |
+          set +e
+          out="$(bash scripts/install_cloning.sh 2>&1)"
+          rc=$?
+          set -e
+          echo "$out"
+          if [ "$rc" -eq 0 ]; then
+            echo "FAIL: expected non-zero exit on Linux"
+            exit 1
+          fi
+          echo "$out" | grep -q "macOS arm64 only" \
+            || { echo "FAIL: missing platform-bail message"; exit 1; }
+          echo "OK: bailed cleanly on Linux"
