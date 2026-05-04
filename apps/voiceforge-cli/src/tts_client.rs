@@ -17,8 +17,8 @@ struct TtsResponse {
 pub async fn speak(text: &str, voice: &str) -> Result<String> {
     let client = Client::new();
 
-    let base = std::env::var("VOICEFORGE_TTS_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:5555".to_string());
+    let base =
+        std::env::var("VOICEFORGE_TTS_URL").unwrap_or_else(|_| "http://127.0.0.1:5555".to_string());
     let url = format!("{}/tts", base.trim_end_matches('/'));
 
     let response = client
@@ -26,7 +26,9 @@ pub async fn speak(text: &str, voice: &str) -> Result<String> {
         .json(&TtsRequest { text, voice })
         .send()
         .await
-        .context("Could not connect to local TTS server. Start services/tts-server/server.py first.")?;
+        .context(
+            "Could not connect to local TTS server. Start services/tts-server/server.py first.",
+        )?;
 
     let status = response.status();
 
