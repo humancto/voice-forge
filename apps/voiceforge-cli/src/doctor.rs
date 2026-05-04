@@ -252,14 +252,15 @@ fn check_config_toml() -> Check {
     // `toml` in just for one field. When config grows, swap to a
     // proper parser.
     let active = raw.lines().find_map(|l| {
-        let l = l.trim();
-        if l.starts_with("active_voice") {
-            l.split('=')
-                .nth(1)
-                .map(|s| s.trim().trim_matches('"').to_string())
-        } else {
-            None
-        }
+        // Token-equality, not prefix-match — otherwise a hypothetical
+        // `active_voice_backup = "x"` would shadow the real key.
+        l.split_once('=').and_then(|(k, v)| {
+            if k.trim() == "active_voice" {
+                Some(v.trim().trim_matches('"').to_string())
+            } else {
+                None
+            }
+        })
     });
     let Some(active) = active else {
         return warn(
@@ -496,6 +497,24 @@ mod tests {
         let check = check_config_toml();
         assert_eq!(check.status, CheckStatus::Error);
         assert!(check.detail.contains("this_voice_does_not_exist"));
+        std::env::remove_var("VOICEFORGE_HOME");
+    }
+
+    #[test]
+    #[serial]
+    fn config_toml_check_ignores_keys_that_only_share_a_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        // active_voice_backup must NOT shadow the real key.
+        std::fs::write(
+            home.join("config.toml"),
+            b"active_voice_backup = \"this_voice_does_not_exist\"\nactive_voice = \"default\"\n",
+        )
+        .unwrap();
+        std::env::set_var("VOICEFORGE_HOME", home);
+        let check = check_config_toml();
+        assert_eq!(check.status, CheckStatus::Ok);
+        assert!(check.detail.contains("default"));
         std::env::remove_var("VOICEFORGE_HOME");
     }
 
