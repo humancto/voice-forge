@@ -135,6 +135,13 @@ jobs:
         if: runner.os == 'macOS'
         run: bash tests/install/install_cloning_smoke.sh
 
+      - name: clone_voice.sh smoke (dry-run)
+        # Stages a fake INSTALLED.toml + a tiny source, dry-runs the
+        # clone recipe, asserts step labels + invalid-name + missing-
+        # source error paths. Runs on both OSes (the recipe itself is
+        # platform-agnostic; only the cloning *runtime* is macOS-only).
+        run: bash tests/install/clone_voice_smoke.sh
+
       - name: install_cloning.sh bails cleanly on Linux
         # On Linux it must exit non-zero with a clear message; the
         # smoke test asserts the bail branch.

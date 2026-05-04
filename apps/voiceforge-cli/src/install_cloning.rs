@@ -38,6 +38,34 @@ pub fn marker_path() -> Option<PathBuf> {
     paths::user_home().map(|h| h.join("cloning/INSTALLED.toml"))
 }
 
+/// `<voiceforge_home>/cloning/venv/bin/python` — the cloning runtime
+/// interpreter. `None` only when home itself is unresolvable.
+#[allow(dead_code)] // wired in commit 4 of this PR (tts.rs Engine::Cloning)
+pub fn cloning_venv_python() -> Option<PathBuf> {
+    paths::user_home().map(|h| h.join("cloning/venv/bin/python"))
+}
+
+/// Path to the GPT-SoVITS clone managed by install-cloning.sh.
+#[allow(dead_code)]
+pub fn cloning_repo_dir() -> Option<PathBuf> {
+    paths::user_home().map(|h| h.join("cloning/repo"))
+}
+
+/// Path to the voice-forge-shipped synth worker. The repo's
+/// `scripts/cloning_synth.py` is loaded by the cloning venv's python.
+#[allow(dead_code)]
+pub fn cloning_synth_script() -> Option<PathBuf> {
+    if let Some(repo_configs) = paths::repo_config_dir() {
+        if let Some(repo) = repo_configs.parent() {
+            let candidate = repo.join("scripts/cloning_synth.py");
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
 /// `true` when the marker exists and parses with the expected schema.
 /// Public API for callers (e.g. future `clone` subcommand) who only
 /// want a yes/no.
