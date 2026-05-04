@@ -55,49 +55,61 @@ test result: FAILED. 3 passed; 1 failed
 
 ## Quick start
 
-### Prerequisites
-
 ```bash
-brew install rust ffmpeg yt-dlp
+curl -fsSL https://raw.githubusercontent.com/humancto/voice-forge/main/install.sh | bash
+voiceforge say --text "VoiceForge is ready"
 ```
 
-### Run the demo
+That's it. The installer detects your OS, builds from source, drops the binary on your `PATH`, and the first invocation initializes `~/.voiceforge/` with five built-in voices. **No Python required** for the default `say` / `run` flow — VoiceForge shells to the OS-native TTS (`say` on macOS, `espeak-ng` on Linux). The Python TTS server is opt-in, only needed for voice cloning (ROADMAP 2.1+).
+
+Prereqs the installer expects: `git`, `cargo` (via [rustup](https://rustup.rs)), `ffmpeg`. It tells you exactly which one's missing if any are.
+
+Wary of `curl | bash`? Inspect first:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/humancto/voice-forge/main/install.sh -o install.sh
+less install.sh
+bash install.sh
+```
+
+Override defaults with env vars:
+
+```bash
+VOICEFORGE_REF=v0.2.0 \
+VOICEFORGE_INSTALL_DIR=$HOME/.local/bin \
+bash install.sh
+```
+
+### Build from source manually
 
 ```bash
 git clone https://github.com/humancto/voice-forge
 cd voice-forge
+cargo build --release --manifest-path apps/voiceforge-cli/Cargo.toml
+./apps/voiceforge-cli/target/release/voiceforge say --text "Built from source"
+```
 
-# 1. Build the CLI
-cd apps/voiceforge-cli && cargo build --release && cd ../..
+### Optional: Python TTS server (for voice cloning, ROADMAP 2.1+)
 
-# 2. Start the local TTS server (fallback engine — macOS `say` / Linux `espeak`)
+```bash
 cd services/tts-server
 python3 -m venv .venv && source .venv/bin/activate
 pip install flask
 python server.py &
 cd ../..
 
-# 3. Speak something
-./apps/voiceforge-cli/target/release/voiceforge \
-  say --text "Build failed again." --voice angry_duck
-
-# 4. Wrap a command
-./apps/voiceforge-cli/target/release/voiceforge \
-  run -- cargo test
+VOICEFORGE_TTS_URL=http://127.0.0.1:5555 voiceforge say --text "Hi from XTTS"
 ```
 
-That's the **fallback** path — works without any model download, no GPU,
-no Python ML stack. For real voice cloning, install the heavy stack:
+For full voice cloning (XTTS v2, ~3 GB of `torch` + `coqui-tts`):
 
 ```bash
-# Adds ~3 GB of torch + coqui-tts + the XTTS v2 model
 cd services/tts-server
 pip install coqui-tts
 VOICEFORGE_TTS_ENGINE=xtts python server.py
 ```
 
-Then drop any wav into `services/tts-server/voices/<name>.wav` and the
-server uses it as a speaker reference.
+Drop any WAV at `services/tts-server/voices/<name>.wav` and the server uses it as a speaker reference. (`voiceforge install-cloning` lands in ROADMAP 2.1.)
 
 ## Architecture
 

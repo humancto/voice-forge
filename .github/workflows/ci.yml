@@ -121,3 +121,9 @@ jobs:
         env:
           VOICEFORGE_REQUIRE_FIXTURES: "1"
         run: cargo test --manifest-path apps/voiceforge-cli/Cargo.toml --all-features
+
+      - name: install.sh smoke (dry-run)
+        # Lives here so prereqs (git, cargo, ffmpeg) are installed by
+        # the matrix-level apt/brew steps above. Exercises the script
+        # against both ubuntu-24.04 and macos-14 every PR.
+        run: bash tests/install/smoke.sh
