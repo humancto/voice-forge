@@ -36,3 +36,8 @@ tests/fixtures/*.aiff
 
 # Planning scratch (not shipped)
 .planning/scratch/
+
+# Pack rendering: intermediate artifacts (reference encodings, per-phrase work, logs)
+packs/*/.work/
+packs/*/render.log
+packs/*/wav/

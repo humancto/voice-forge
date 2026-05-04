@@ -1,0 +1,60 @@
+{
+  "voice": "peter",
+  "voice_source": "Peter Griffin (Family Guy)",
+  "reference_clip": "tests/fixtures/peter_nike_clean_32k.wav",
+  "reference_prompt_text": "How do you know what's inside you unless you test yourself? Don't do one push-up, do 100. Don't run one mile, run a marathon. Don't have one family, have a second family all the way across the country. Don't just have a second family. Have a third family and Santa Fe with an alternative lifestyle. Don't spend any time with the first two families. Take a commitment to family number three and double down by announcing it at his war hero father's retirement party. Don't go to the funeral because remember you've got two other families to deal with and a marathon to train for. Don't just let Kenneth walk out of your life. Take his life from him. Don't just go to jail. Go to death row by killing the two other families. Don't just let anyone have their closure by apologizing. Send a message that you're not afraid of hell.",
+  "phrases": [
+    {
+      "event": "build_success",
+      "text": "Holy crap Lois, the build passed. Sweet."
+    },
+    {
+      "event": "build_failed",
+      "text": "Holy crap Lois, the build is on fire. Somebody call the fire department."
+    },
+    {
+      "event": "tests_passed",
+      "text": "Hey Lois, the tests just passed. Get me a sandwich to celebrate."
+    },
+    {
+      "event": "tests_failed",
+      "text": "Oh my god, the tests are failing. This is worse than the time I fought that giant chicken."
+    },
+    {
+      "event": "lint_error",
+      "text": "What the hell is this code. Freakin sweet."
+    },
+    {
+      "event": "type_error",
+      "text": "Lois, the types don't match. Why does this always happen to me."
+    },
+    {
+      "event": "deploy_success",
+      "text": "Heh heh heh. I just shipped to production. What could possibly go wrong."
+    },
+    {
+      "event": "deploy_failed",
+      "text": "Oh my god, the deploy is broken. Quick, blame Brian."
+    },
+    {
+      "event": "commit_success",
+      "text": "Sweet. Just committed my changes. Time for a beer."
+    },
+    {
+      "event": "push_rejected",
+      "text": "What the hell, my push got rejected. Stupid git."
+    },
+    {
+      "event": "secret_detected",
+      "text": "Oh my god, you committed your API key. What the hell is wrong with you."
+    },
+    {
+      "event": "agent_done",
+      "text": "Holy crap, the AI agent finished. Let's see what disaster it made."
+    },
+    {
+      "event": "agent_stuck",
+      "text": "Hey Lois, the AI is stuck. It's just like Stewie when he gets confused."
+    }
+  ]
+}
