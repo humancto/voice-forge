@@ -13,7 +13,7 @@ Each unchecked item is one PR with tests. Expert agent (auto-detected from stack
 ## Phase 0 — Bootstrap
 
 - [ ] **0.1 Git init, push to GitHub, branch protection on `main`.**
-- [ ] **0.2 CI matrix on macOS + Linux: `cargo fmt`, `clippy -D warnings`, `cargo test`, `pytest`, `ruff`, `shellcheck`.**
+- [x] **0.2 CI matrix on macOS + Linux: `cargo fmt`, `clippy -D warnings`, `cargo test`, `pytest`, `ruff`, `shellcheck`.** _(Rust + shellcheck shipped; pytest + ruff deferred to ROADMAP 0.4.)_
 - [ ] **0.3 Rust integration test harness with stub TTS server + injectable audio sink behind a trait. Introduces `VOICEFORGE_TTS_URL`.**
 - [ ] **0.4 Python test harness: pytest + Flask test client over `/health`, `/voices`, `/tts` cache hit/miss, empty-text rejection.**
 
