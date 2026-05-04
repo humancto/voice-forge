@@ -42,7 +42,11 @@ fi
 echo "$output" | grep -qi "not on .*PATH" \
   || { echo "FAIL: missing PATH warning for non-PATH install dir"; echo "$output"; exit 1; }
 
-echo "==> shellcheck install.sh"
-shellcheck -e SC1091 "$INSTALL_SH"
+if command -v shellcheck >/dev/null 2>&1; then
+  echo "==> shellcheck install.sh"
+  shellcheck -e SC1091 "$INSTALL_SH"
+else
+  echo "==> shellcheck not on PATH, skipping (dedicated CI shellcheck job covers this)"
+fi
 
 echo "==> all install.sh smoke checks passed"
