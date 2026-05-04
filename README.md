@@ -1,36 +1,40 @@
 # VoiceForge
 
 <p align="center">
-  <strong>Make your terminal talk back. In any voice.</strong>
+  <strong>Your terminal, in any voice you clone.</strong><br/>
+  <em>Build fails? Peter Griffin yells at you. Tests pass? Trump says they're tremendous. Local-first. No cloud. No accounts.</em>
+</p>
+
+<p align="center">
+  <a href="https://humancto.github.io/voice-forge/"><strong>website</strong></a> ·
+  <a href="#quick-start">quick start</a> ·
+  <a href="#how-it-works">how it works</a> ·
+  <a href="ROADMAP.md">roadmap</a> ·
+  <a href="https://github.com/humancto/voice-forge/issues">issues</a>
 </p>
 
 <p align="center">
   <a href="https://github.com/humancto/voice-forge/actions"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/humancto/voice-forge/ci.yml?branch=main&label=CI&logo=githubactions&logoColor=white"></a>
   <a href="https://github.com/humancto/voice-forge/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/humancto/voice-forge?color=blue"></a>
-  <a href="https://github.com/humancto/voice-forge/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/humancto/voice-forge?include_prereleases&sort=semver"></a>
   <a href="https://github.com/humancto/voice-forge/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/humancto/voice-forge?style=flat&logo=github"></a>
   <img alt="Built with Rust" src="https://img.shields.io/badge/built%20with-Rust-orange?logo=rust&logoColor=white">
-  <img alt="Built with Python" src="https://img.shields.io/badge/cloning-Python%20%2B%20XTTS-3776AB?logo=python&logoColor=white">
+  <img alt="Cloning backend" src="https://img.shields.io/badge/cloning-GPT--SoVITS%20v2-3776AB?logo=python&logoColor=white">
   <img alt="Platforms" src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux-lightgrey">
 </p>
 
 ---
 
-VoiceForge is a **local voice runtime for your terminal**. It turns build
-failures, test runs, git commits, and AI-agent activity into spoken
-reactions — using any voice you point it at.
+VoiceForge is a **local voice runtime for your terminal.** It turns build failures, test runs, git commits, and AI-agent activity into spoken reactions — using any voice you point it at.
 
 ```text
-voiceforge clone ./peter.wav as peter
-voiceforge use peter
+voiceforge install-cloning
+voiceforge clone peter ./peter_griffin_60s.wav
 voiceforge run -- npm test
   # ...20 minutes pass...
   # 🔊  "Holy crap Lois, the build is on fire!"
 ```
 
-Bring your own voice, a YouTube clip, an mp3 you ripped — VoiceForge
-ingests it, embeds it locally with [XTTS v2](https://huggingface.co/coqui/XTTS-v2),
-and the next time your build dies, that voice says so.
+Bring **any clean ≥60-second audio file** of the voice you want — a Family Guy clip you transcoded, a podcast segment, a recording of yourself. VoiceForge runs the proven multi-aux-ref recipe (1 main + 5 aux × 10 s, Whisper-transcribed) through **GPT-SoVITS v2** locally and the next time your build dies, that voice says so.
 
 ## Why
 
@@ -55,16 +59,49 @@ test result: FAILED. 3 passed; 1 failed
 
 ## Quick start
 
+**Step 1 — install the binary** (no Python required, ~2 min on a clean Rust cache):
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/humancto/voice-forge/main/install.sh | bash
 voiceforge say --text "VoiceForge is ready"
 ```
 
-That's it. The installer detects your OS, builds from source, drops the binary on your `PATH`, and the first invocation initializes `~/.voiceforge/` with five built-in voices. **No Python required** for the default `say` / `run` flow — VoiceForge shells to the OS-native TTS (`say` on macOS, `espeak-ng` on Linux). The Python TTS server is opt-in, only needed for voice cloning (ROADMAP 2.1+).
+That alone gets you `voiceforge run -- <cmd>` reactions in the OS default voice (`say` on macOS, `espeak-ng` on Linux). For real voice cloning, continue:
 
-Prereqs the installer expects: `git`, `cargo` (via [rustup](https://rustup.rs)), `ffmpeg`. It tells you exactly which one's missing if any are.
+**Step 2 — install the cloning runtime** (~10 min, ~1.7 GB; macOS arm64 only for now):
 
-Wary of `curl | bash`? Inspect first:
+```bash
+voiceforge install-cloning
+```
+
+This installs Python 3.11 (arm64), `ffmpeg@6`, the GPT-SoVITS v2 weights, and a venv at `~/.voiceforge/cloning/`. Idempotent — re-runs are seconds. `voiceforge install-cloning --check` verifies the install. `--force` rebuilds, `--uninstall` removes it.
+
+**Step 3 — clone a voice from any local audio file** (≥60 s of clean single-speaker audio):
+
+```bash
+voiceforge clone peter ./peter_griffin_60s.wav
+```
+
+**Step 4 — speak in that voice:**
+
+```bash
+voiceforge say --voice peter --text "Holy crap, the build is on fire."
+voiceforge run --voice peter -- npm test    # speaks on success/failure
+```
+
+That's the full flow. Each `voiceforge run` invocation pays one ~15 s model-load cold-start; subsequent reactions in the same process are warm (~3 s synth on CPU).
+
+### Sourcing audio
+
+Bring your own. We don't bundle yt-dlp — download with whatever tool you like, then point `voiceforge clone` at the local file. The recipe wants:
+
+- ≥ 60 seconds duration
+- Single speaker, no music / sound effects / other voices
+- Decent broadcast or podcast-quality audio
+
+We also pre-tested the recipe on a real C-SPAN Trump speech and got **100% Whisper-verified output** on full-sentence reactions. Cleaner the source, closer the clone. Stylized cartoon voices (Peter Griffin, Stewie) hit ~70% timbre fidelity zero-shot — fine-tuning on roadmap.
+
+### Wary of `curl | bash`?
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/humancto/voice-forge/main/install.sh -o install.sh
@@ -72,7 +109,7 @@ less install.sh
 bash install.sh
 ```
 
-Override defaults with env vars:
+Override defaults:
 
 ```bash
 VOICEFORGE_REF=v0.2.0 \
@@ -89,65 +126,60 @@ cargo build --release --manifest-path apps/voiceforge-cli/Cargo.toml
 ./apps/voiceforge-cli/target/release/voiceforge say --text "Built from source"
 ```
 
-### Optional: Python TTS server (for voice cloning, ROADMAP 2.1+)
+## How it works
 
-```bash
-cd services/tts-server
-python3 -m venv .venv && source .venv/bin/activate
-pip install flask
-python server.py &
-cd ../..
-
-VOICEFORGE_TTS_URL=http://127.0.0.1:5555 voiceforge say --text "Hi from XTTS"
-```
-
-For full voice cloning (XTTS v2, ~3 GB of `torch` + `coqui-tts`):
-
-```bash
-cd services/tts-server
-pip install coqui-tts
-VOICEFORGE_TTS_ENGINE=xtts python server.py
-```
-
-Drop any WAV at `services/tts-server/voices/<name>.wav` and the server uses it as a speaker reference. (`voiceforge install-cloning` lands in ROADMAP 2.1.)
-
-## Architecture
+Two layers, all local:
 
 ```text
-                                   ┌──────────────────────────┐
-  terminal event                   │  apps/voiceforge-cli     │
-  (build, test, git, agent)  ────▶ │     (Rust)               │
-                                   │  ─ command wrapping      │
-                                   │  ─ rule engine           │
-                                   │  ─ audio playback (rodio)│
-                                   └──────────┬───────────────┘
-                                              │ POST /tts
-                                              ▼
-                                   ┌──────────────────────────┐
-                                   │  services/tts-server     │
-                                   │     (Python, Flask)      │
-                                   │  ─ XTTS v2 (Coqui)       │
-                                   │  ─ macOS say fallback    │
-                                   │  ─ sha256 audio cache    │
-                                   └──────────┬───────────────┘
-                                              │ wav path
-                                              ▼
-                                       speakers go brrrr
+         terminal event                           voiceforge process
+         (build, test, git, agent)
+                │
+                ▼
+       ┌─────────────────────┐         ┌──────────────────────────┐
+       │ apps/voiceforge-cli │         │ scripts/cloning_synth.py │
+       │ (Rust, async tokio) │  ──►    │ (Python, GPT-SoVITS v2)  │
+       │                     │  NDJSON │                          │
+       │ rule engine         │  stdin  │ lazy load                │
+       │ engine facade       │  stdout │ 1 main + 5 aux refs      │
+       │ ~/.voiceforge/cache │         │ atomic write             │
+       └─────────────────────┘         └──────────────────────────┘
+                │                                │
+                │  embedded fallback             │  cached .wav under
+                │  (macOS say / espeak-ng)       │  ~/.voiceforge/cache/
+                ▼                                ▼
+       ┌─────────────────────────────────────────────────────────┐
+       │                   rodio (CoreAudio / ALSA)              │
+       └─────────────────────────────────────────────────────────┘
+                │
+                ▼
+                🔊  speakers go brrrr
 ```
 
 ## What's shipped
 
-- ✅ Rust CLI with `say`, `run`, `daemon`, `voices`, **`ingest`** subcommands
-- ✅ Python TTS server with macOS / Linux fallback engines
-- ✅ Audio ingest pipeline — accepts wav/mp3/m4a/ogg/flac/aiff/webm via `ffmpeg`
-- ✅ Sha256 audio cache (server-side)
-- ✅ Voice presets + event rules
-- ✅ End-to-end smoke tests against a real Peter Griffin clip
-- 🚧 `voiceforge clone <source> as <name>` — see [ROADMAP](ROADMAP.md) item 2.5
-- 🚧 One-curl install (item 1.5)
-- 🚧 Real Unix-socket daemon (item 1.8)
+CLI subcommands (run any with `--help`):
 
-The full backlog and per-item status lives in [`ROADMAP.md`](ROADMAP.md).
+|                                              |                                                                                                  |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `voiceforge install-cloning`                 | One-shot install of Python 3.11 + ffmpeg@6 + GPT-SoVITS v2 (`--check`, `--force`, `--uninstall`) |
+| `voiceforge clone <name> <source>`           | Clone a voice from a local audio file ≥ 60 s                                                     |
+| `voiceforge say --voice <name> --text "..."` | One-shot synthesis through embedded / server / cloning engines (auto-routed)                     |
+| `voiceforge run -- <cmd>`                    | Run a command, react on success/failure with a random line from `events.json`                    |
+| `voiceforge ingest <input> <output>`         | Transcode any audio source to canonical 22050 Hz mono 16-bit PCM                                 |
+| `voiceforge doctor`                          | 9-check system health, JSON via `--json`                                                         |
+| `voiceforge voices`                          | List built-in presets                                                                            |
+| `voiceforge daemon`                          | (heartbeat placeholder; real Unix-socket daemon is roadmap 1.8)                                  |
+
+Other shipped infrastructure:
+
+- ✅ Three-engine facade (`Embedded` / `Server` / `Cloning`) with per-call dispatch by voice name
+- ✅ Long-lived NDJSON synth child — model loads once per process, warm for the rest
+- ✅ Atomic-rename cache at `~/.voiceforge/cache/<sha>.wav`
+- ✅ Path-traversal-proof voice profile loader (canonicalize + reserved-name list)
+- ✅ CI: rustfmt, clippy `-D warnings`, doc-link check, integration tests on macOS + Linux
+- ✅ Verified end-to-end: 100% Whisper round-trip on real Trump speech via the cloning pipeline
+
+The full backlog and per-item status lives in [`ROADMAP.md`](ROADMAP.md). Currently 12 items shipped, headline ones: 1.1 (embedded fallback), 1.2 (first-run bootstrap), 1.6 (install.sh), 1.7 (doctor), 2.1 (install-cloning), **2.5 (clone)**.
 
 ## Project docs
 
@@ -174,12 +206,17 @@ that skip path honest.
 
 ## A word on voice cloning
 
-VoiceForge ships the cloning pipeline. Whatever WAV you point it at,
-that's what it speaks in. **What you clone for personal/local use is
-your call.** What we ship in the bundled voice catalog (Phase 2.5 in
-the roadmap) stays original synthetic characters — `angry_duck`,
-`sarcastic_goblin`, `tiny_robot`, etc. — to keep the distribution
-clean.
+VoiceForge ships the cloning pipeline. Whatever WAV you point it at, that's what it speaks in. **What you clone for personal/local use is your call.** What we ship in the bundled voice catalog stays original synthetic characters — `angry_duck`, `sarcastic_goblin`, `tiny_robot`, `hype_narrator`, `default` — to keep the distribution clean.
+
+### Quality expectations (honest)
+
+- **Real human voices** (Trump, Obama, your colleague) → ~95% timbre fidelity zero-shot. Sounds like them in a quiet scene.
+- **Stylized cartoon/character voices** (Peter Griffin, Stewie, Quagmire) → ~70% zero-shot. Recognizable but not Seth-MacFarlane-grade. Open-source zero-shot has a model-imposed ceiling for hyper-stylized timbres.
+- **Fine-tuning** (20–30 min of clean dialogue + transcripts, 30–60 min training on a free Colab GPU) is the path to ~99% on character voices. On the roadmap, not shipped.
+
+### Why GPT-SoVITS v2 (vs XTTS, F5-TTS, OpenVoice, Tortoise)?
+
+We A/B-tested them all. GPT-SoVITS v2 with the multi-aux-ref recipe (1 main + 5 aux × 10 s, Whisper-transcribed) was the clear winner: faster than Tortoise, sharper than XTTS, more stable than F5-TTS for English, ~250 MB models vs Tortoise's gigabytes. v2Pro and v4 didn't earn their extra cost on short reaction lines.
 
 ## Contributing
 
