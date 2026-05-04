@@ -3,7 +3,6 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 mod audio;
-mod cache;
 mod config;
 mod daemon;
 mod ingest;
