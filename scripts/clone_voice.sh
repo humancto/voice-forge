@@ -35,7 +35,7 @@ VOICEFORGE_HOME="${VOICEFORGE_HOME:-$HOME/.voiceforge}"
 VOICES_DIR="$VOICEFORGE_HOME/voices"
 VOICE_DIR="$VOICES_DIR/$NAME"
 PARTIAL_DIR="$VOICES_DIR/$NAME.partial"
-LOCK_FILE="$VOICES_DIR/$NAME.lock"
+LOCK_DIR="$VOICES_DIR/$NAME.lock.d"
 DRY_RUN="${VOICEFORGE_CLONE_DRY_RUN:-0}"
 
 # Cloning install state
@@ -58,12 +58,11 @@ trap 'die "clone_voice.sh failed at line $LINENO"' ERR
 
 mkdir -p "$VOICES_DIR"
 
-# Acquire lock; release on exit.
-exec 9>"$LOCK_FILE"
-if ! flock -n 9; then
-  die "another clone of $NAME is already running (lock held)"
+# Atomic mkdir-based lock (portable across macOS + Linux; no flock dep).
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  die "another clone of $NAME is already running (lock held: $LOCK_DIR)"
 fi
-trap 'flock -u 9 2>/dev/null || true; rm -f "$LOCK_FILE"' EXIT
+trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
 
 # Validate cloning install (script must run after `voiceforge install-cloning`)
 if [[ "$DRY_RUN" != "1" ]]; then
@@ -92,7 +91,7 @@ step "voiceforge clone $NAME (source: $SOURCE)"
 # -- 1. resolve source to a local WAV ---------------------------------
 
 TMPDIR_=$(mktemp -d)
-trap 'flock -u 9 2>/dev/null || true; rm -f "$LOCK_FILE"; rm -rf "$TMPDIR_"' EXIT
+trap 'rmdir "$LOCK_DIR" 2>/dev/null || true; rm -rf "$TMPDIR_"' EXIT
 
 # strip file:// prefix
 case "$SOURCE" in

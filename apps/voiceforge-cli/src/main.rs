@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 mod audio;
 mod bootstrap;
+mod clone;
 mod config;
 mod daemon;
 mod doctor;
@@ -53,6 +54,20 @@ enum Commands {
         input: PathBuf,
         /// Path to the output WAV. Parent dirs are created if missing.
         output: PathBuf,
+    },
+    /// Clone a voice from a local file or URL. Saves a voice profile under
+    /// `~/.voiceforge/voices/<name>/` that `voiceforge say --voice <name>` uses.
+    /// Source must be ≥60s of clean single-speaker audio.
+    Clone {
+        /// Voice name; matches [a-z0-9_-], 1..=32 chars. Cannot be a reserved
+        /// name (presets, cache, cloning, voices, embeddings, logs).
+        name: String,
+        /// Local file path (`/abs`, `~/rel`, `file://...`) or URL
+        /// (anything yt-dlp resolves).
+        source: String,
+        /// Replace an existing voice with the same name.
+        #[arg(long)]
+        force: bool,
     },
     /// Install the GPT-SoVITS v2 cloning stack into ~/.voiceforge/cloning/.
     /// Idempotent. macOS arm64 only for now (Linux/Windows: ROADMAP 2.1.1).
@@ -131,6 +146,13 @@ async fn main() -> Result<()> {
             uninstall,
         } => {
             install_cloning::run(force, check, uninstall)?;
+        }
+        Commands::Clone {
+            name,
+            source,
+            force,
+        } => {
+            clone::run(name, source, force)?;
         }
     }
 
