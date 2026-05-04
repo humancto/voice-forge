@@ -152,6 +152,23 @@ mod tests {
         }
     }
 
+    /// Guards against a future PR removing the `default` preset
+    /// without updating `EMBEDDED_CONFIG_TOML`'s `active_voice`. If
+    /// the embedded config ever points at a non-existent preset,
+    /// fresh installs would silently default to a missing voice.
+    #[test]
+    fn embedded_config_active_voice_exists_in_embedded_presets() {
+        let active = "default";
+        assert!(
+            EMBEDDED_CONFIG_TOML.contains(&format!("active_voice = \"{active}\"")),
+            "embedded config.toml should default to active_voice = {active:?}"
+        );
+        assert!(
+            EMBEDDED_PRESETS.iter().any(|(id, _)| *id == active),
+            "embedded preset {active:?} must exist or fresh installs break"
+        );
+    }
+
     #[test]
     #[serial]
     fn creates_layout_in_empty_home() {
