@@ -17,4 +17,5 @@ rand = "0.8"
 
 [dev-dependencies]
 hound = "3"
+serial_test = "3"
 tempfile = "3"
