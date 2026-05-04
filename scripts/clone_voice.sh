@@ -13,7 +13,7 @@
 #
 # Args (positional):
 #   1: name      — voice name (must match ^[a-z0-9_-]{1,32}$)
-#   2: source    — local file path | yt-dlp-resolvable URL | file:// URL
+#   2: source    — local file path (supports ~/, file://, abs/rel paths)
 #   3: force     — "1" to replace an existing voice, "0" to refuse
 #
 # Honors:
@@ -59,8 +59,16 @@ trap 'die "clone_voice.sh failed at line $LINENO"' ERR
 mkdir -p "$VOICES_DIR"
 
 # Atomic mkdir-based lock (portable across macOS + Linux; no flock dep).
+# Reclaim the lockdir if it's older than 60 min — covers SIGKILL leaks
+# (the trap below handles SIGTERM/SIGINT/normal exit).
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-  die "another clone of $NAME is already running (lock held: $LOCK_DIR)"
+  if [[ -n "$(find "$LOCK_DIR" -maxdepth 0 -mmin +60 2>/dev/null)" ]]; then
+    warn "stale lockdir >60min, reclaiming: $LOCK_DIR"
+    rmdir "$LOCK_DIR"
+    mkdir "$LOCK_DIR"
+  else
+    die "another clone of $NAME is already running (lock held: $LOCK_DIR)"
+  fi
 fi
 trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
 
@@ -107,29 +115,18 @@ esac
 RAW="$TMPDIR_/raw.wav"
 case "$SOURCE" in
   http://*|https://*)
-    step "downloading via yt-dlp"
-    run retry_yt_dlp "$SOURCE" "$RAW"
-    ;;
-  *)
-    if [[ ! -f "$SOURCE" ]]; then
-      die "local source not found: $SOURCE"
-    fi
-    step "transcoding local source"
-    run ffmpeg -hide_banner -loglevel error -y -i "$SOURCE" \
-      -ac 1 -ar 32000 -acodec pcm_s16le -- "$RAW"
+    die "URL sources are not supported by clone — provide a local file path.
+Tip: download with your tool of choice (yt-dlp, browser, curl), then point at the file:
+  voiceforge clone $NAME ./your_clip.wav"
     ;;
 esac
 
-retry_yt_dlp() {
-  local url="$1" out="$2"
-  local n=1 attempts=3 sleep_secs=5
-  until yt-dlp --quiet --no-warnings -x --audio-format wav --audio-quality 0 \
-        -o "$out" "$url"; do
-    if (( n >= attempts )); then return 1; fi
-    warn "yt-dlp failed (attempt $n/$attempts), retrying in ${sleep_secs}s"
-    sleep "$sleep_secs"; n=$(( n + 1 ))
-  done
-}
+if [[ ! -f "$SOURCE" ]]; then
+  die "local source not found: $SOURCE"
+fi
+step "transcoding local source"
+run ffmpeg -hide_banner -loglevel error -y -i "$SOURCE" \
+  -ac 1 -ar 32000 -acodec pcm_s16le -- "$RAW"
 
 if [[ "$DRY_RUN" != "1" ]]; then
   [[ -f "$RAW" ]] || die "source resolution failed; no $RAW"

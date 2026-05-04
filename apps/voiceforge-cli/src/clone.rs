@@ -150,6 +150,7 @@ ffmpeg6_prefix = "/x"
 schema_version = 1
 name = "peter"
 source = "x"
+created_at = "2026-05-04T00:00:00Z"
 duration_seconds = 60.0
 recipe = "gpt-sovits-v2-multi-aux-ref"
 aux_count = 5

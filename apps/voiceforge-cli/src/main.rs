@@ -62,8 +62,9 @@ enum Commands {
         /// Voice name; matches [a-z0-9_-], 1..=32 chars. Cannot be a reserved
         /// name (presets, cache, cloning, voices, embeddings, logs).
         name: String,
-        /// Local file path (`/abs`, `~/rel`, `file://...`) or URL
-        /// (anything yt-dlp resolves).
+        /// Local file path: `/abs/path.wav`, `~/relative.mp3`, or
+        /// `file://...`. URLs are not supported — download with your
+        /// tool of choice and point at the local file.
         source: String,
         /// Replace an existing voice with the same name.
         #[arg(long)]

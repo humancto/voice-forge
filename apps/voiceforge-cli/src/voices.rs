@@ -30,7 +30,9 @@ pub struct VoiceProfile {
     pub schema_version: u32,
     pub name: String,
     pub source: String,
-    #[serde(default)]
+    /// Required: feeds the cloning cache key. Defaulting it would make
+    /// every clone of a missing-created_at voice collide on the same
+    /// cache entry, breaking `--force` invalidation.
     pub created_at: String,
     pub duration_seconds: f64,
     pub recipe: String,
@@ -320,6 +322,7 @@ aux_count = 5
 schema_version = 99
 name = "peter"
 source = "x"
+created_at = "2026-05-04T00:00:00Z"
 duration_seconds = 60.0
 recipe = "gpt-sovits-v2-multi-aux-ref"
 aux_count = 5
@@ -329,6 +332,36 @@ aux_count = 5
             let err = load_voice("peter").unwrap_err();
             let msg = format!("{err:#}");
             assert!(msg.contains("schema_version"), "got: {msg}");
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn load_voice_errors_on_missing_created_at() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), |home| {
+            let dir = home.join("voices/peter");
+            std::fs::create_dir_all(&dir).unwrap();
+            // No created_at — required field; cache key would otherwise
+            // collide with every other no-created_at clone.
+            std::fs::write(
+                dir.join("profile.toml"),
+                br#"
+schema_version = 1
+name = "peter"
+source = "x"
+duration_seconds = 60.0
+recipe = "gpt-sovits-v2-multi-aux-ref"
+aux_count = 5
+"#,
+            )
+            .unwrap();
+            let err = load_voice("peter").unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("created_at") || msg.contains("missing field"),
+                "expected missing-field error mentioning created_at, got: {msg}"
+            );
         });
     }
 
