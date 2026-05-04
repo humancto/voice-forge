@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 mod audio;
+mod bootstrap;
 mod config;
 mod daemon;
 mod ingest;
@@ -46,6 +47,11 @@ enum Commands {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    // Eager: every subcommand benefits from a populated ~/.voiceforge/.
+    // Lazy bootstrap per-handler is a bug-farm.
+    let bootstrap_report = bootstrap::ensure_voiceforge_home()?;
+    bootstrap::print_if_first_run(&bootstrap_report);
 
     match cli.command {
         Commands::Say { text, voice } => {

@@ -20,7 +20,7 @@ pub struct VoicePreset {
 /// Embedded copies of every preset bundled in `configs/presets/`.
 /// `include_str!` is greppable and keeps the build script free; switch
 /// to `build.rs` enumeration only if/when the count grows past ~15.
-const EMBEDDED_PRESETS: &[(&str, &str)] = &[
+pub(crate) const EMBEDDED_PRESETS: &[(&str, &str)] = &[
     (
         "default",
         include_str!("../../../configs/presets/default.json"),
