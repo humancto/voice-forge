@@ -59,3 +59,16 @@ Each unchecked item is one PR with tests. Expert agent (auto-detected from stack
 - [ ] **5.1 `voiceforge.sh` static site on Cloudflare Pages: serves install.sh + three demo asciicasts with synced audio.**
 - [ ] **5.2 Homebrew tap as second install path.**
 - [ ] **5.3 `voiceforge share`: emits an asciinema cast with synced WAV track, one-shot upload.**
+
+## Phase 6 — Pre-rendered voice packs
+
+> **GATED ON QUALITY MILESTONE.** Packs only ship after we've produced ≥1 voice
+> sample that's instantly recognizable to a casual fan ("yeah, that's Peter").
+> Bad packs are worse than no packs.
+
+- [ ] **6.0 Quality milestone — pick a working model + recipe combo (GPT-SoVITS v2 + clean-source 32 kHz, fish-speech S2 Pro, or other) that produces recognizable Peter / Obama / Trump output. Document the chosen pipeline in `docs/PACK_RENDERING.md`. Without this, 6.1+ are blocked.**
+- [ ] **6.1 Pack format spec: `manifest.toml` (name, license, attribution, source URL), `wav/<event>.wav` (PCM 22050 mono 16-bit, normalized -16 LUFS), `reference.wav` (the source clip used for cloning, so users can re-clone locally), sha256 manifest.**
+- [ ] **6.2 `voiceforge pack {list,install,remove,info}` subcommand. Pulls index from a separate repo (e.g. `humancto/voice-forge-packs`) over HTTPS, sha256-verifies, extracts to `~/.voiceforge/packs/<name>/`.**
+- [ ] **6.3 Static GitHub-hosted pack index + GitHub Pages JSON (`packs.json`). PR-based pack additions; CODEOWNERS gate; takedown automation.**
+- [ ] **6.4 Initial pack release: 5 voices (peter, obama, stewie, quagmire, trump) × 20 events. "Educational, research, and local-testing use only" disclaimer in every pack manifest + repo README. Takedown policy.**
+- [ ] **6.5 `voiceforge say --pack <name> --event <id>` for direct pack playback (sub-100ms, no synth). Falls back to live cloning when pack doesn't have the event.**
