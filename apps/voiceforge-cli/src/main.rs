@@ -6,6 +6,7 @@ mod audio;
 mod bootstrap;
 mod config;
 mod daemon;
+mod doctor;
 mod ingest;
 mod paths;
 mod rules;
@@ -34,6 +35,15 @@ enum Commands {
     },
     Daemon,
     Voices,
+    /// System health check — verifies the binary, ~/.voiceforge layout,
+    /// audio backend, embedded TTS, optional Python server, cache,
+    /// presets, and ffmpeg.
+    Doctor {
+        /// Output as JSON for tooling. Schema is versioned via
+        /// `schema_version` and currently at 1.
+        #[arg(long)]
+        json: bool,
+    },
     /// Transcode any audio source into a canonical XTTS-ready WAV
     /// (22050 Hz mono 16-bit PCM, 10–60 s).
     Ingest {
@@ -73,6 +83,18 @@ async fn main() -> Result<()> {
                     voice.id,
                     voice.display_name.unwrap_or_else(|| voice.id.clone())
                 );
+            }
+        }
+        Commands::Doctor { json } => {
+            let report = doctor::run_doctor().await;
+            let mut out = std::io::stdout().lock();
+            if json {
+                doctor::render_json(&report, &mut out)?;
+            } else {
+                doctor::render_human(&report, &mut out)?;
+            }
+            if report.has_error() {
+                std::process::exit(1);
             }
         }
         Commands::Ingest { input, output } => {
