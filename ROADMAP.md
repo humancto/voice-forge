@@ -37,8 +37,8 @@ Each unchecked item is one PR with tests. Expert agent (auto-detected from stack
 - [ ] **2.3 URL ingest: any URL `yt-dlp` can resolve (YouTube, Vimeo, Twitter/X, TikTok, direct media). Pipes into the audio pipeline.**
 - [ ] **2.4 `voiceforge record <name>`: cpal mic capture, 20–30s, live waveform meter + countdown, writes to `~/.voiceforge/voices/<name>.wav`.**
 - [x] **2.5 `voiceforge clone <name> <source>`: source = local file path. Runs the proven multi-aux-ref pipeline (ffmpeg trim+loudnorm → 6×10s split → Whisper transcribe), saves a voice profile under `~/.voiceforge/voices/<name>/`. URL/yt-dlp ingestion deferred — bring your own local file.** _(Engine::Cloning facade also shipped: `voiceforge say --voice <name>` routes through GPT-SoVITS v2 with the long-lived NDJSON synth child.)_
-- [ ] **2.6 `voiceforge use <name>`: sets active default voice in `~/.voiceforge/config.toml`.**
-- [ ] **2.7 `voiceforge voices`: list + show source, duration, embedding path, last-used. `voiceforge voices remove <name>` deletes the lot.**
+- [x] **2.6 `voiceforge use <name>`: sets active default voice in `~/.voiceforge/config.toml`.**
+- [x] **2.7 `voiceforge voices`: list + show source, duration, embedding path, last-used. `voiceforge voices remove <name>` deletes the lot.**
 
 ## Phase 3 — Plug into the dev workflow
 
