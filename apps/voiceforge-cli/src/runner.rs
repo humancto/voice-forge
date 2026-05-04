@@ -1,6 +1,7 @@
 use anyhow::{bail, Result};
-use std::process::Command;
+use tokio::process::Command;
 
+use crate::rules::{choose_reaction, resolve_rules_path, Rules};
 use crate::{audio, tts_client};
 
 pub async fn run_command(command: Vec<String>) -> Result<()> {
@@ -13,15 +14,28 @@ pub async fn run_command(command: Vec<String>) -> Result<()> {
 
     println!("Running: {} {}", program, args.join(" "));
 
-    let status = Command::new(program).args(args).status()?;
+    let status = Command::new(program).args(args).status().await?;
 
-    let (voice, text) = if status.success() {
+    let event = if status.success() {
+        "build_success"
+    } else {
+        "build_failed"
+    };
+
+    let fallback = if status.success() {
         ("hype_narrator", "Command completed successfully.")
     } else {
         ("angry_duck", "Command failed.")
     };
 
-    let audio_path = tts_client::speak(text, voice).await?;
+    let rules = resolve_rules_path()
+        .and_then(|path| Rules::load(&path).ok())
+        .unwrap_or_else(Rules::default_builtin);
+
+    let mut rng = rand::thread_rng();
+    let (voice, text) = choose_reaction(&rules, event, fallback, &mut rng);
+
+    let audio_path = tts_client::speak(&text, &voice).await?;
     audio::play(&audio_path)?;
 
     if !status.success() {
