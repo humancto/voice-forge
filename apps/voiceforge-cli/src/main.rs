@@ -7,6 +7,8 @@ mod cache;
 mod config;
 mod daemon;
 mod ingest;
+mod paths;
+mod rules;
 mod runner;
 mod tts_client;
 
