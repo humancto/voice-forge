@@ -8,6 +8,7 @@ mod config;
 mod daemon;
 mod doctor;
 mod ingest;
+mod install_cloning;
 mod paths;
 mod rules;
 mod runner;
@@ -51,6 +52,19 @@ enum Commands {
         input: PathBuf,
         /// Path to the output WAV. Parent dirs are created if missing.
         output: PathBuf,
+    },
+    /// Install the GPT-SoVITS v2 cloning stack into ~/.voiceforge/cloning/.
+    /// Idempotent. macOS arm64 only for now (Linux/Windows: ROADMAP 2.1.1).
+    InstallCloning {
+        /// Wipe venv + marker before installing (preserves HF model cache).
+        #[arg(long, conflicts_with_all = ["check", "uninstall"])]
+        force: bool,
+        /// Verify install state without mutating anything.
+        #[arg(long, conflicts_with_all = ["force", "uninstall"])]
+        check: bool,
+        /// Remove venv + repo + marker (preserves HF model cache).
+        #[arg(long, conflicts_with_all = ["force", "check"])]
+        uninstall: bool,
     },
 }
 
@@ -109,6 +123,13 @@ async fn main() -> Result<()> {
                 report.codec,
                 report.duration_seconds,
             );
+        }
+        Commands::InstallCloning {
+            force,
+            check,
+            uninstall,
+        } => {
+            install_cloning::run(force, check, uninstall)?;
         }
     }
 
