@@ -39,7 +39,13 @@ jobs:
       - run: |
           set -euo pipefail
           shopt -s nullglob
-          targets=(scripts/*.sh install.sh)
+          # nullglob makes scripts/*.sh expand to empty when no matches;
+          # install.sh is a literal token (it'll be a real glob once 1.5
+          # ships) so we test for it explicitly.
+          targets=(scripts/*.sh)
+          if [ -f install.sh ]; then
+            targets+=(install.sh)
+          fi
           if [ ${#targets[@]} -eq 0 ]; then
             echo "no shell scripts to check"
             exit 0
@@ -82,10 +88,17 @@ jobs:
         uses: actions/cache@v4
         with:
           path: tests/fixtures
-          key: fixtures-${{ runner.os }}-${{ hashFiles('scripts/fetch_fixtures.sh') }}
+          key: fixtures-${{ runner.os }}-synthetic-${{ hashFiles('scripts/fetch_fixtures.sh') }}
 
-      - name: fetch test fixtures
+      - name: generate synthetic test fixtures
         if: steps.fixture-cache.outputs.cache-hit != 'true'
+        # CI uses synthetic (sine wave) instead of YouTube — shared
+        # runner egress IPs hit YouTube's bot detection. The audio_ingest
+        # tests only assert format/duration; content doesn't matter.
+        # Local dev still uses 'youtube' mode by default to hear the
+        # actual Peter Griffin clip.
+        env:
+          FIXTURE_MODE: synthetic
         run: bash scripts/fetch_fixtures.sh
 
       - name: clippy
