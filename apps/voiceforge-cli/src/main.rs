@@ -9,7 +9,7 @@ mod ingest;
 mod paths;
 mod rules;
 mod runner;
-mod tts_client;
+mod tts;
 
 #[derive(Parser)]
 #[command(name = "voiceforge")]
@@ -49,8 +49,9 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Say { text, voice } => {
-            let audio_path = tts_client::speak(&text, &voice).await?;
-            audio::play(&audio_path)?;
+            let engine = tts::select_engine()?;
+            let audio_path = engine.speak(&text, &voice).await?;
+            audio::play(audio_path.to_str().unwrap_or(""))?;
         }
         Commands::Run { command } => {
             runner::run_command(command).await?;
