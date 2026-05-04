@@ -162,11 +162,36 @@ def main() -> int:
         return 2
     manifest = json.loads(manifest_path.read_text())
 
-    ref_clip_rel = manifest["reference_clip"]
-    repo_root = Path(__file__).resolve().parent.parent
-    ref_clip = (repo_root / ref_clip_rel).resolve()
+    schema = manifest.get("schema_version")
+    if schema != 1:
+        print(
+            f"error: unsupported phrases.json schema_version: {schema!r} "
+            f"(this script handles v1)",
+            file=sys.stderr,
+        )
+        return 2
+
+    # reference_clip is relative to the pack dir (portable across check-out
+    # locations). Earlier we used repo-root-relative paths, which broke when
+    # users cloned to different locations.
+    ref_clip = (pack_dir / manifest["reference_clip"]).resolve()
     if not ref_clip.is_file():
         print(f"error: reference clip not found: {ref_clip}", file=sys.stderr)
+        return 2
+
+    # Voice name is implicit from the pack directory name (the rust-side
+    # PackId == directory name); no need to duplicate it in the manifest.
+    voice_name = pack_dir.name
+
+    # phrases is a {event: text} map (v1 schema). Iteration order = insertion
+    # order in Python 3.7+ for dicts, so the JSON authoring order is preserved.
+    phrases: dict[str, str] = manifest["phrases"]
+    if not isinstance(phrases, dict):
+        print(
+            f"error: phrases must be an object {{event: text, ...}} "
+            f"in schema_version 1; got {type(phrases).__name__}",
+            file=sys.stderr,
+        )
         return 2
 
     log_file = pack_dir / "render.log"
@@ -174,9 +199,10 @@ def main() -> int:
     log_file.touch()
 
     print(f"pack:        {pack_dir}")
-    print(f"voice:       {manifest['voice']}")
+    print(f"voice:       {voice_name}")
+    print(f"source:      {manifest.get('voice_source', '(unspecified)')}")
     print(f"reference:   {ref_clip}")
-    print(f"phrases:     {len(manifest['phrases'])}")
+    print(f"phrases:     {len(phrases)}")
     print(f"device:      {args.device}")
     print(f"fish-speech: {args.fish_speech_dir}")
     print(f"log:         {log_file}")
@@ -197,7 +223,7 @@ def main() -> int:
 
     # Step 1+2: per-phrase render, resumable
     failed = []
-    for entry in manifest["phrases"]:
+    for event, text in phrases.items():
         try:
             render_phrase(
                 args.fish_speech_dir,
@@ -205,17 +231,17 @@ def main() -> int:
                 pack_dir,
                 ref_npy,
                 manifest["reference_prompt_text"],
-                entry["event"],
-                entry["text"],
+                event,
+                text,
                 args.device,
                 log_file,
             )
         except Exception as e:  # noqa: BLE001
-            print(f"[FAIL]   {entry['event']}: {e}", file=sys.stderr)
-            failed.append(entry["event"])
+            print(f"[FAIL]   {event}: {e}", file=sys.stderr)
+            failed.append(event)
 
     print()
-    print(f"rendered: {len(manifest['phrases']) - len(failed)} / {len(manifest['phrases'])}")
+    print(f"rendered: {len(phrases) - len(failed)} / {len(phrases)}")
     if failed:
         print(f"failed:   {failed}")
         return 1

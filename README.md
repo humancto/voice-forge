@@ -57,12 +57,14 @@ VoiceForge is designed to be invoked from agent hooks (Claude Code, Cursor, Code
 # Claude Code post-tool-use hook (example)
 voiceforge say --voice peter --text "Tests passed."
 
-# Or, with a pre-rendered pack — sub-100ms playback:
-voiceforge say --pack peter --event tests_passed       # roadmap 6.5
+# Or, with a pre-rendered pack — sub-100ms WAV playback (no synth):
+voiceforge play --pack peter --event tests_passed      # roadmap 6.5
 
 # Or pipe structured JSON events from any source:
-echo '{"event":"tests_passed"}' | voiceforge ingest    # roadmap 3.3
+echo '{"event":"tests_passed"}' | voiceforge hook      # roadmap 3.3
 ```
+
+`say` synthesizes from text on demand. `play` looks up a pre-rendered WAV in an installed pack and plays it directly — no model load, no synth call. `hook` is the JSON event-stream entry point for agent integrations (a different concept from `voiceforge ingest`, which transcodes audio sources).
 
 When your agent is doing 20 minutes of background work and finally finishes a deploy, you hear Peter announce it from the kitchen. That's the whole pitch.
 
