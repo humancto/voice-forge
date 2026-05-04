@@ -76,6 +76,7 @@ impl Rules {
         Some((rule.voice.as_str(), line.as_str()))
     }
 
+    #[allow(dead_code)] // public API for callers / tests; not used internally yet
     pub fn contains(&self, event: &str) -> bool {
         self.0.contains_key(event)
     }
