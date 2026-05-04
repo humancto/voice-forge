@@ -235,7 +235,9 @@ if [[ ! -d "$REPO_DIR/.git" ]]; then
 fi
 step "checking out pinned SHA $GPT_SOVITS_SHA"
 run git -C "$REPO_DIR" fetch --quiet origin "$GPT_SOVITS_SHA"
-run git -C "$REPO_DIR" checkout --quiet "$GPT_SOVITS_SHA"
+# reset --hard (not checkout) so a previously-corrupted worktree
+# from a partial install can never block the pinned SHA from landing.
+run git -C "$REPO_DIR" reset --quiet --hard "$GPT_SOVITS_SHA"
 
 step "asserting required repo paths exist"
 for p in "${REQUIRED_REPO_PATHS[@]}"; do
