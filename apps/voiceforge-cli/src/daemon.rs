@@ -9,7 +9,9 @@ pub async fn run() -> Result<()> {
     let engine = tts::select_engine()?;
     loop {
         sleep(Duration::from_secs(30)).await;
-        let audio_path = engine.speak("VoiceForge daemon is alive.", "tiny_robot").await?;
+        let audio_path = engine
+            .speak("VoiceForge daemon is alive.", "tiny_robot")
+            .await?;
         audio::play(audio_path.to_str().unwrap_or(""))?;
     }
 }

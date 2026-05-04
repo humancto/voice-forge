@@ -145,7 +145,10 @@ impl std::fmt::Debug for EmbeddedEngine {
         f.debug_struct("EmbeddedEngine")
             .field("cache_dir", &self.cache_dir)
             .field("backend", &self.backend)
-            .field("synth_override", &self.synth_override.as_ref().map(|_| "<closure>"))
+            .field(
+                "synth_override",
+                &self.synth_override.as_ref().map(|_| "<closure>"),
+            )
             .finish()
     }
 }
@@ -187,9 +190,8 @@ impl EmbeddedEngine {
             return Ok(out);
         }
 
-        std::fs::create_dir_all(&self.cache_dir).with_context(|| {
-            format!("could not create cache dir {}", self.cache_dir.display())
-        })?;
+        std::fs::create_dir_all(&self.cache_dir)
+            .with_context(|| format!("could not create cache dir {}", self.cache_dir.display()))?;
 
         // Atomic write: synth into a sibling .tmp, then rename. A
         // SIGINT mid-synthesis can't poison the cache.
@@ -213,9 +215,9 @@ impl EmbeddedEngine {
 
                 let mut say = Command::new("say");
                 say.arg("-o").arg(&aiff).arg("--").arg(text);
-                run_with_timeout(&mut say, "say").await.with_context(|| {
-                    "macOS `say` failed (is it on PATH? it ships with macOS)"
-                })?;
+                run_with_timeout(&mut say, "say")
+                    .await
+                    .with_context(|| "macOS `say` failed (is it on PATH? it ships with macOS)")?;
 
                 let mut afconvert = Command::new("afconvert");
                 afconvert
@@ -227,14 +229,15 @@ impl EmbeddedEngine {
                     .arg(&tmp_wav);
                 let result = run_with_timeout(&mut afconvert, "afconvert").await;
                 let _ = std::fs::remove_file(&aiff);
-                result.with_context(|| "afconvert failed (ships with macOS as part of CoreAudio)")?;
+                result
+                    .with_context(|| "afconvert failed (ships with macOS as part of CoreAudio)")?;
             }
             (None, Backend::LinuxEspeak) => {
                 let mut espeak = Command::new("espeak-ng");
                 espeak.arg("-w").arg(&tmp_wav).arg("--").arg(text);
-                run_with_timeout(&mut espeak, "espeak-ng").await.with_context(
-                    || "espeak-ng failed (try `sudo apt install espeak-ng`)",
-                )?;
+                run_with_timeout(&mut espeak, "espeak-ng")
+                    .await
+                    .with_context(|| "espeak-ng failed (try `sudo apt install espeak-ng`)")?;
             }
             (None, Backend::Unsupported(name)) => {
                 bail!(
@@ -291,6 +294,8 @@ fn cache_key(text: &str, voice: &str, backend_id: &str) -> String {
     hex::encode(hasher.finalize())
 }
 
+// run_with_timeout MUST come before the #[cfg(test)] mod (clippy
+// items_after_test_module). It's the last non-test item in this file.
 async fn run_with_timeout(cmd: &mut Command, label: &str) -> Result<()> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -324,6 +329,148 @@ async fn run_with_timeout(cmd: &mut Command, label: &str) -> Result<()> {
                 let _ = child.kill().await;
                 return Err(e).with_context(|| format!("{label} wait failed"));
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tokio::process::Command;
+
+    fn shell_escape(s: &str) -> String {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
+
+    fn fake_synth(counter: Arc<AtomicUsize>) -> SynthBuilder {
+        Box::new(move |s: &Synth| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            let out = s.output_aiff_or_wav.to_owned();
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg(format!(
+                "printf 'RIFF\\0\\0\\0\\0WAVEfmt ' > {}",
+                shell_escape(out.to_str().expect("utf8 path"))
+            ));
+            cmd
+        })
+    }
+
+    fn engine_in(tmp: &Path, counter: Arc<AtomicUsize>) -> EmbeddedEngine {
+        EmbeddedEngine::for_testing(tmp.to_path_buf(), Backend::MacosSay, fake_synth(counter))
+    }
+
+    #[tokio::test]
+    async fn first_call_invokes_synth_and_writes_cache() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let counter = Arc::new(AtomicUsize::new(0));
+        let engine = engine_in(tmp.path(), counter.clone());
+
+        let path = engine.speak("hello", "default").await.expect("speak");
+
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+        assert!(path.exists());
+        assert!(path.starts_with(tmp.path()));
+        assert_eq!(path.extension().and_then(|s| s.to_str()), Some("wav"));
+    }
+
+    #[tokio::test]
+    async fn second_call_with_same_input_is_cache_hit() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let counter = Arc::new(AtomicUsize::new(0));
+        let engine = engine_in(tmp.path(), counter.clone());
+
+        let p1 = engine.speak("hello", "default").await.expect("first");
+        let p2 = engine.speak("hello", "default").await.expect("second");
+
+        assert_eq!(p1, p2);
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            1,
+            "synth not invoked on cache hit"
+        );
+    }
+
+    #[tokio::test]
+    async fn different_text_yields_different_cache_path() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let counter = Arc::new(AtomicUsize::new(0));
+        let engine = engine_in(tmp.path(), counter.clone());
+
+        let a = engine.speak("first", "default").await.expect("a");
+        let b = engine.speak("second", "default").await.expect("b");
+
+        assert_ne!(a, b);
+        assert_eq!(counter.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn different_voice_yields_different_cache_path() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let counter = Arc::new(AtomicUsize::new(0));
+        let engine = engine_in(tmp.path(), counter.clone());
+
+        let a = engine.speak("hi", "voice_one").await.expect("a");
+        let b = engine.speak("hi", "voice_two").await.expect("b");
+
+        assert_ne!(a, b);
+    }
+
+    #[tokio::test]
+    async fn rejects_too_long_text() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let counter = Arc::new(AtomicUsize::new(0));
+        let engine = Engine::Embedded(engine_in(tmp.path(), counter.clone()));
+
+        let huge = "x".repeat(MAX_TEXT_LEN + 1);
+        let err = engine.speak(&huge, "default").await.unwrap_err();
+        assert!(format!("{err:#}").contains("too long"));
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn rejects_empty_text() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let counter = Arc::new(AtomicUsize::new(0));
+        let engine = Engine::Embedded(engine_in(tmp.path(), counter.clone()));
+
+        let err = engine.speak("   ", "default").await.unwrap_err();
+        assert!(format!("{err:#}").contains("empty"));
+    }
+
+    #[tokio::test]
+    async fn aborted_synth_does_not_poison_cache() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let synth: SynthBuilder = Box::new(|_s: &Synth| {
+            let mut cmd = Command::new("sh");
+            cmd.arg("-c").arg("exit 1");
+            cmd
+        });
+        let engine =
+            EmbeddedEngine::for_testing(tmp.path().to_path_buf(), Backend::MacosSay, synth);
+
+        let cache_path = engine.cache_path_for("hello", "default");
+        let err = engine.speak("hello", "default").await.unwrap_err();
+        assert!(format!("{err:#}").contains("synth"));
+        assert!(
+            !cache_path.exists(),
+            "cache must not exist after failed synth"
+        );
+    }
+
+    #[tokio::test]
+    async fn select_engine_picks_server_when_url_set() {
+        // Process-global env mutation — fine in isolation here, but
+        // guard against parallel tests that touch the same var.
+        // (No others in this module touch VOICEFORGE_TTS_URL.)
+        let prev = std::env::var("VOICEFORGE_TTS_URL").ok();
+        std::env::set_var("VOICEFORGE_TTS_URL", "http://example.invalid");
+        let engine = select_engine().expect("select");
+        assert!(matches!(engine, Engine::Server(_)));
+        match prev {
+            Some(v) => std::env::set_var("VOICEFORGE_TTS_URL", v),
+            None => std::env::remove_var("VOICEFORGE_TTS_URL"),
         }
     }
 }
