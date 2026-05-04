@@ -19,7 +19,7 @@ Each unchecked item is one PR with tests. Expert agent (auto-detected from stack
 
 ## Phase 1 — Curl install, zero Python required
 
-- [ ] **1.1 Embedded fallback TTS in Rust: `say` (macOS), `espeak-ng` (Linux), SAPI (Windows). `voiceforge say` works without the Python server.**
+- [x] **1.1 Embedded fallback TTS in Rust: `say` (macOS), `espeak-ng` (Linux), SAPI (Windows). `voiceforge say` works without the Python server.** _(Windows SAPI deferred to ROADMAP 1.1.2.)_
 - [ ] **1.2 First-run bootstrap: create `~/.voiceforge/{presets,cache,voices,embeddings,logs,config.toml}`, copy in built-in presets.**
 - [x] **1.3 Fix preset path: `$VOICEFORGE_HOME` → `~/.voiceforge/presets` → repo-relative fallback. Kills the `../../configs/presets` bug in `config.rs`.**
 - [x] **1.4 Wire `configs/rules/events.json` into `runner.rs` so the random-line picker actually reads it.**
