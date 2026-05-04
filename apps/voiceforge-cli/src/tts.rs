@@ -284,6 +284,11 @@ impl Backend {
     }
 }
 
+/// Note: embedded keys are intentionally different from the Python
+/// server's keys (server includes preset params: temperature, speed,
+/// model_version — see `services/tts-server/server.py`'s `cache_key`).
+/// The two caches live in disjoint roots (`~/.voiceforge/cache/` vs
+/// `services/tts-server/audio_cache/`) and are independent by design.
 fn cache_key(text: &str, voice: &str, backend_id: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(text.as_bytes());
@@ -336,6 +341,7 @@ async fn run_with_timeout(cmd: &mut Command, label: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use tokio::process::Command;
@@ -460,6 +466,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn select_engine_picks_server_when_url_set() {
         // Process-global env mutation — fine in isolation here, but
         // guard against parallel tests that touch the same var.
