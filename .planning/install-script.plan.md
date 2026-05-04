@@ -43,27 +43,29 @@ doctor`-like summary at the end.
 6. `cargo build --release --manifest-path apps/voiceforge-cli/Cargo.toml`
    with progress visible (no `--quiet`).
 7. Copy the built binary to `INSTALL_DIR/voiceforge`. `chmod +x`.
-8. Create `~/.voiceforge/{presets,cache,voices,embeddings,logs}` and
-   copy in the bundled presets from the checkout's
-   `configs/presets/*.json`. **Idempotent** — never clobber a preset
-   with the same name (compare sha256, skip if equal, leave the user's
-   if different).
-9. Smoke test: `voiceforge --version` and `voiceforge voices`. If
-   either non-zero, fail loud with the captured stderr.
-10. Final banner: a 6-line summary with the install location, the
-    `~/.voiceforge` path, the next-step command (`voiceforge say --text
-"VoiceForge is ready" --voice default`), and a one-line note about
-    `voiceforge install-cloning` (item 2.1) for the cloning path.
+8. **Skip dir creation — ROADMAP 1.2 already shipped.** The first
+   invocation of the installed binary populates `~/.voiceforge/`
+   itself via `bootstrap::ensure_voiceforge_home()`. install.sh just
+   runs the binary's smoke step and lets the bootstrap banner fire.
+9. Smoke test: run `INSTALL_DIR/voiceforge voices` once. This both
+   verifies the binary works AND triggers the first-run bootstrap so
+   the user sees the layout banner immediately. Capture exit code;
+   fail loud with stderr on non-zero.
+10. Final install.sh banner: a 4-line summary with the install
+    location and the next-step command (`voiceforge say --text
+"VoiceForge is ready"`).
 
 ## Idempotency contract
 
 Running install.sh twice in a row does **not**:
 
 - Re-clone if checkout exists (just `git fetch && checkout`).
-- Overwrite a customized preset (sha-compare, skip if user-edited).
 - Duplicate `PATH` warnings.
-- Re-print the success banner unless the install actually changed
-  state (track via a single "did we do work?" flag).
+- Re-print the bootstrap banner — that's owned by the binary itself
+  via 1.2, which already prints exactly once on first run.
+
+The preset-preservation guarantee belongs to `bootstrap.rs` (1.2),
+not install.sh.
 
 ## Files
 
@@ -94,15 +96,14 @@ Running install.sh twice in a row does **not**:
 2. **Idempotent re-run** — run a second time. Assert no "cloning"
    message, no preset overwrite, exit 0, banner shows "already
    installed" or equivalent.
-3. **Customized preset preserved** — edit
-   `~/.voiceforge/presets/default.json`, re-run. Assert the user's
-   edits survive.
+3. **Customized preset preserved** — already covered by the 1.2
+   tests; install.sh doesn't touch presets directly.
 4. **Missing prereq** — `PATH=/usr/bin sh install.sh`. Assert exit 1
    with a clear "install ffmpeg via brew" message.
 5. **Non-PATH install dir** — force `INSTALL_DIR=~/bin` on a system
    where it's not on PATH. Assert the script warns the user how to add
    it.
-6. `shellcheck install.sh` — zero warnings.
+6. `shellcheck install.sh` — zero warnings (CI already runs this).
 
 ## Risks
 

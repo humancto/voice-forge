@@ -54,6 +54,8 @@ jobs:
           # runtime-created venvs (.venv/bin/activate). Other infos
           # stay enabled.
           shellcheck -e SC1091 "${targets[@]}"
+      - name: install.sh smoke (dry-run)
+        run: bash tests/install/smoke.sh
 
   rust:
     name: clippy + test (${{ matrix.os }})
