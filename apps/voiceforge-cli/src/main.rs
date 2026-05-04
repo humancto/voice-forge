@@ -61,7 +61,11 @@ async fn main() -> Result<()> {
         Commands::Voices => {
             let voices = config::load_presets()?;
             for voice in voices {
-                println!("{} - {}", voice.id, voice.display_name.unwrap_or_else(|| voice.id.clone()));
+                println!(
+                    "{} - {}",
+                    voice.id,
+                    voice.display_name.unwrap_or_else(|| voice.id.clone())
+                );
             }
         }
         Commands::Ingest { input, output } => {

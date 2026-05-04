@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Default GITHUB_TOKEN is too broad; this workflow only reads source.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --manifest-path apps/voiceforge-cli/Cargo.toml --all -- --check
+
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          set -euo pipefail
+          shopt -s nullglob
+          # nullglob makes scripts/*.sh expand to empty when no matches;
+          # install.sh is a literal token (it'll be a real glob once 1.5
+          # ships) so we test for it explicitly.
+          targets=(scripts/*.sh)
+          if [ -f install.sh ]; then
+            targets+=(install.sh)
+          fi
+          if [ ${#targets[@]} -eq 0 ]; then
+            echo "no shell scripts to check"
+            exit 0
+          fi
+          # SC1091: 'Not following sourced file' is expected for
+          # runtime-created venvs (.venv/bin/activate). Other infos
+          # stay enabled.
+          shellcheck -e SC1091 "${targets[@]}"
+
+  rust:
+    name: clippy + test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/voiceforge-cli
+
+      - name: install system deps (ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          # libasound2-dev: rodio -> alsa-sys needs alsa.pc
+          # ffmpeg: fixture transcode + audio_ingest tests
+          sudo apt-get install -y --no-install-recommends \
+            ffmpeg \
+            libasound2-dev \
+            pkg-config
+          pipx install 'yt-dlp==2026.2.4'
+
+      - name: install ffmpeg + yt-dlp (macos)
+        if: runner.os == 'macOS'
+        run: |
+          brew install ffmpeg yt-dlp
+
+      - name: cache test fixtures
+        id: fixture-cache
+        uses: actions/cache@v4
+        with:
+          path: tests/fixtures
+          key: fixtures-${{ runner.os }}-synthetic-${{ hashFiles('scripts/fetch_fixtures.sh') }}
+
+      - name: generate synthetic test fixtures
+        if: steps.fixture-cache.outputs.cache-hit != 'true'
+        # CI uses synthetic (sine wave) instead of YouTube — shared
+        # runner egress IPs hit YouTube's bot detection. The audio_ingest
+        # tests only assert format/duration; content doesn't matter.
+        # Local dev still uses 'youtube' mode by default to hear the
+        # actual Peter Griffin clip.
+        env:
+          FIXTURE_MODE: synthetic
+        run: bash scripts/fetch_fixtures.sh
+
+      - name: clippy
+        run: cargo clippy --manifest-path apps/voiceforge-cli/Cargo.toml --all-targets --all-features -- -D warnings
+
+      - name: cargo doc
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --manifest-path apps/voiceforge-cli/Cargo.toml --no-deps --all-features
+
+      - name: test
+        env:
+          VOICEFORGE_REQUIRE_FIXTURES: "1"
+        run: cargo test --manifest-path apps/voiceforge-cli/Cargo.toml --all-features
