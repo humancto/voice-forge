@@ -13,6 +13,7 @@ use std::time::Duration;
 use tokio::process::Command;
 
 use crate::config;
+use crate::install_cloning;
 use crate::paths;
 use crate::tts::Backend;
 
@@ -62,6 +63,7 @@ pub async fn run_doctor() -> DoctorReport {
     checks.push(check_presets());
     checks.push(check_config_toml());
     checks.push(check_ffmpeg().await);
+    checks.push(check_cloning());
 
     DoctorReport {
         schema_version: SCHEMA_VERSION,
@@ -277,6 +279,23 @@ fn check_config_toml() -> Check {
             format!("active_voice \"{active}\" does not match any installed preset"),
         ),
         Err(e) => err("config.toml", format!("preset load failed: {e:#}")),
+    }
+}
+
+fn check_cloning() -> Check {
+    match install_cloning::read_install_state() {
+        Ok(state) => ok(
+            "cloning",
+            format!(
+                "GPT-SoVITS @ {} (ffmpeg6: {})",
+                &state.gpt_sovits_sha[..state.gpt_sovits_sha.len().min(7)],
+                state.ffmpeg6_prefix
+            ),
+        ),
+        Err(_) => warn(
+            "cloning",
+            "not installed — run `voiceforge install-cloning` to enable voice cloning",
+        ),
     }
 }
 
