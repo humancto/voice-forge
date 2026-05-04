@@ -91,6 +91,14 @@ def render_phrase(
     log_file: Path,
 ) -> None:
     """Run text2semantic + DAC decode for a single phrase. Resumable."""
+    if not event or "/" in event or event.startswith("."):
+        raise ValueError(
+            f"invalid event id {event!r}: must be non-empty, no slashes, no leading dot"
+        )
+    if not text or not text.strip():
+        raise ValueError(
+            f"empty text for event {event!r}: fish-speech produces unpredictable output on empty prompts"
+        )
     out_wav = pack_dir / "wav" / f"{event}.wav"
     out_wav.parent.mkdir(parents=True, exist_ok=True)
     if out_wav.is_file():

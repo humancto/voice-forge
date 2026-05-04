@@ -178,26 +178,24 @@ Create `packs/<voicename>/phrases.json`:
 
 ```json
 {
-  "voice": "peter",
+  "schema_version": 1,
   "voice_source": "Peter Griffin (Family Guy)",
-  "reference_clip": "tests/fixtures/peter_nike_clean_32k.wav",
-  "reference_prompt_text": "<the whisper transcript>",
-  "phrases": [
-    {
-      "event": "build_success",
-      "text": "Holy crap Lois, the build passed. Sweet."
-    },
-    {
-      "event": "build_failed",
-      "text": "Holy crap Lois, the build is on fire. Somebody call the fire department."
-    },
-    {
-      "event": "tests_passed",
-      "text": "Hey Lois, the tests just passed. Get me a sandwich to celebrate."
-    }
-  ]
+  "reference_clip": "../../tests/fixtures/peter_nike_clean_32k.wav",
+  "reference_prompt_text": "<the whisper transcript of the reference clip>",
+  "phrases": {
+    "build_success": "Holy crap Lois, the build passed. Sweet.",
+    "build_failed": "Holy crap Lois, the build is on fire. Somebody call the fire department.",
+    "tests_passed": "Hey Lois, the tests just passed. Get me a sandwich to celebrate."
+  }
 }
 ```
+
+Schema notes (v1):
+
+- `schema_version: 1` is required. The renderer rejects unknown schemas.
+- The voice name is implicit — it's the directory name (`packs/peter/` ⇒ voice `peter`).
+- `reference_clip` is **relative to the pack directory**, not the repo root. From `packs/peter/`, the path `../../tests/fixtures/...` reaches the repo's fixtures.
+- `phrases` is a `{event: text}` object so events are unique by construction and lookup at runtime is O(1).
 
 Then:
 
