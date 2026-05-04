@@ -17,7 +17,12 @@ pub struct IngestConfig {
 impl Default for IngestConfig {
     fn default() -> Self {
         Self {
-            target_sample_rate: 22_050,
+            // GPT-SoVITS v2 trains and infers at 32 kHz. Earlier we used
+            // 22_050 (XTTS native), which forced the model to internally
+            // resample with a non-integer ratio (22050→32000 = 1.4512×) —
+            // producing phasing / "from a well" comb-filter artifacts in
+            // the cloned output. Match the model rate exactly.
+            target_sample_rate: 32_000,
             target_channels: 1,
             min_seconds: 10.0,
             max_seconds: 60.0,
