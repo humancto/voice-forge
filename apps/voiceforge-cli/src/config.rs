@@ -2,9 +2,14 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::paths;
+use crate::voices;
+
+/// Default voice when nothing else is configured.
+pub const DEFAULT_VOICE: &str = "default";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VoicePreset {
@@ -137,6 +142,69 @@ fn load_presets_from(dir: &Path) -> Result<Vec<VoicePreset>> {
     }
 
     Ok(presets)
+}
+
+// ---- active-voice in ~/.voiceforge/config.toml ----------------------
+
+/// Resolve the user's `~/.voiceforge/config.toml` path.
+pub fn config_toml_path() -> Option<PathBuf> {
+    paths::user_home().map(|h| h.join("config.toml"))
+}
+
+/// Read `active_voice` from `~/.voiceforge/config.toml`. Returns
+/// `DEFAULT_VOICE` on missing file, missing key, parse failure, or a
+/// value that fails `voices::validate_name` (defends against a
+/// hand-edited config with `active_voice = "../etc"`).
+pub fn read_active_voice() -> String {
+    let Some(path) = config_toml_path() else {
+        return DEFAULT_VOICE.to_string();
+    };
+    let Ok(raw) = fs::read_to_string(&path) else {
+        return DEFAULT_VOICE.to_string();
+    };
+    let Ok(doc) = raw.parse::<toml_edit::DocumentMut>() else {
+        return DEFAULT_VOICE.to_string();
+    };
+    let Some(val) = doc.get("active_voice").and_then(|i| i.as_str()) else {
+        return DEFAULT_VOICE.to_string();
+    };
+    if voices::validate_name(val).is_err() {
+        return DEFAULT_VOICE.to_string();
+    }
+    val.to_string()
+}
+
+/// Write `active_voice = "<name>"` to `~/.voiceforge/config.toml`,
+/// preserving any other keys + comments via `toml_edit`. Atomic via
+/// tmp+rename. Caller is responsible for validating that the voice
+/// exists; this fn only validates the name shape.
+pub fn write_active_voice(name: &str) -> Result<()> {
+    voices::validate_name(name)?;
+
+    let path =
+        config_toml_path().ok_or_else(|| anyhow::anyhow!("could not resolve config.toml path"))?;
+
+    // Parse-edit-write rather than overwriting; preserves comments +
+    // any other top-level keys (e.g. future [tts] table).
+    let raw = fs::read_to_string(&path).unwrap_or_default();
+    let mut doc: toml_edit::DocumentMut = raw
+        .parse()
+        .with_context(|| format!("parsing {} as TOML", path.display()))?;
+    doc["active_voice"] = toml_edit::value(name);
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+    let tmp = path.with_extension("toml.tmp");
+    {
+        let mut f =
+            fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
+        f.write_all(doc.to_string().as_bytes())
+            .with_context(|| format!("writing {}", tmp.display()))?;
+    }
+    fs::rename(&tmp, &path)
+        .with_context(|| format!("renaming {} -> {}", tmp.display(), path.display()))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -280,6 +348,74 @@ mod tests {
                 msg.contains("empty id"),
                 "expected empty-id error, got: {msg}"
             );
+        });
+    }
+
+    // -- active-voice tests -------------------------------------------
+
+    #[test]
+    #[serial]
+    fn read_active_voice_returns_default_when_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_voiceforge_home(tmp.path(), || {
+            assert_eq!(read_active_voice(), DEFAULT_VOICE);
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn read_active_voice_returns_default_on_corrupted_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_voiceforge_home(tmp.path(), || {
+            std::fs::write(
+                tmp.path().join("config.toml"),
+                br#"active_voice = "../etc/passwd""#,
+            )
+            .unwrap();
+            // corrupted config → fall back to DEFAULT, never propagate
+            assert_eq!(read_active_voice(), DEFAULT_VOICE);
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn write_and_read_active_voice_round_trip() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_voiceforge_home(tmp.path(), || {
+            write_active_voice("peter").unwrap();
+            assert_eq!(read_active_voice(), "peter");
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn write_active_voice_preserves_other_keys_and_comments() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_voiceforge_home(tmp.path(), || {
+            std::fs::write(
+                tmp.path().join("config.toml"),
+                b"# Hand-edited config\nactive_voice = \"default\"\nother_key = \"keep_me\"\n",
+            )
+            .unwrap();
+            write_active_voice("peter").unwrap();
+            let raw = std::fs::read_to_string(tmp.path().join("config.toml")).unwrap();
+            assert!(
+                raw.contains("# Hand-edited config"),
+                "comment dropped: {raw}"
+            );
+            assert!(raw.contains("other_key"), "other_key dropped: {raw}");
+            assert!(raw.contains("\"peter\""), "active_voice not updated: {raw}");
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn write_active_voice_rejects_invalid_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_voiceforge_home(tmp.path(), || {
+            let err = write_active_voice("../etc").unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(msg.contains("invalid char"), "got: {msg}");
         });
     }
 }
