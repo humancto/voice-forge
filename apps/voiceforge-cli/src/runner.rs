@@ -2,7 +2,7 @@ use anyhow::{bail, Result};
 use tokio::process::Command;
 
 use crate::rules::{choose_reaction, resolve_rules_path, Rules};
-use crate::{audio, tts_client};
+use crate::{audio, tts};
 
 pub async fn run_command(command: Vec<String>) -> Result<()> {
     if command.is_empty() {
@@ -35,8 +35,9 @@ pub async fn run_command(command: Vec<String>) -> Result<()> {
     let mut rng = rand::thread_rng();
     let (voice, text) = choose_reaction(&rules, event, fallback, &mut rng);
 
-    let audio_path = tts_client::speak(&text, &voice).await?;
-    audio::play(&audio_path)?;
+    let engine = tts::select_engine()?;
+    let audio_path = engine.speak(&text, &voice).await?;
+    audio::play(audio_path.to_str().unwrap_or(""))?;
 
     if !status.success() {
         bail!("Command failed with status: {}", status);
