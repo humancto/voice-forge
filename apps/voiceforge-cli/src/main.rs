@@ -13,6 +13,7 @@ mod paths;
 mod rules;
 mod runner;
 mod tts;
+mod voices;
 
 #[derive(Parser)]
 #[command(name = "voiceforge")]
