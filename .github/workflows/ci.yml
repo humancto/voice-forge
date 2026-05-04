@@ -50,7 +50,10 @@ jobs:
             echo "no shell scripts to check"
             exit 0
           fi
-          shellcheck "${targets[@]}"
+          # SC1091: 'Not following sourced file' is expected for
+          # runtime-created venvs (.venv/bin/activate). Other infos
+          # stay enabled.
+          shellcheck -e SC1091 "${targets[@]}"
 
   rust:
     name: clippy + test (${{ matrix.os }})
@@ -71,11 +74,16 @@ jobs:
         with:
           workspaces: apps/voiceforge-cli
 
-      - name: install ffmpeg + yt-dlp (ubuntu)
+      - name: install system deps (ubuntu)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends ffmpeg
+          # libasound2-dev: rodio -> alsa-sys needs alsa.pc
+          # ffmpeg: fixture transcode + audio_ingest tests
+          sudo apt-get install -y --no-install-recommends \
+            ffmpeg \
+            libasound2-dev \
+            pkg-config
           pipx install 'yt-dlp==2026.2.4'
 
       - name: install ffmpeg + yt-dlp (macos)
