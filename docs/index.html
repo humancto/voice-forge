@@ -1,0 +1,646 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VoiceForge — your terminal, in any voice</title>
+  <meta name="description" content="Local voice runtime. Turns build failures, tests, git events, and AI-agent activity into spoken reactions — in any voice you clone. GPT-SoVITS v2, no cloud, no accounts." />
+  <meta name="theme-color" content="#0e0e10" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700;800&display=swap" rel="stylesheet" />
+
+  <style>
+    /* ========== reset + base ========== */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+    body {
+      font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-weight: 400;
+      background: #0e0e10;
+      color: #ededed;
+      line-height: 1.55;
+      font-size: 15px;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    :root {
+      --bg: #0e0e10;
+      --surface: #15151a;
+      --surface-2: #1c1c22;
+      --line: #2a2a32;
+      --ink: #ededed;
+      --mute: #76767f;
+      --dim: #4a4a52;
+      --acid: #ff6b35;
+      --acid-soft: rgba(255, 107, 53, 0.12);
+      --green: #2bd673;
+      --max: 1080px;
+    }
+
+    /* ========== scanline + grain overlay ========== */
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      pointer-events: none;
+      background: repeating-linear-gradient(
+        to bottom,
+        rgba(255,255,255,0.012) 0px,
+        rgba(255,255,255,0.012) 1px,
+        transparent 1px,
+        transparent 3px
+      );
+      z-index: 1;
+    }
+
+    /* ========== nav ========== */
+    nav {
+      position: fixed; top: 0; left: 0; right: 0;
+      z-index: 10;
+      backdrop-filter: blur(12px);
+      background: rgba(14, 14, 16, 0.78);
+      border-bottom: 1px solid var(--line);
+    }
+    nav .row {
+      max-width: var(--max);
+      margin: 0 auto;
+      padding: 14px 28px;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    nav .brand {
+      font-weight: 800;
+      font-size: 14px;
+      letter-spacing: -0.02em;
+      color: var(--ink);
+      text-decoration: none;
+      display: inline-flex; align-items: center; gap: 8px;
+    }
+    nav .brand::before {
+      content: '';
+      display: inline-block;
+      width: 8px; height: 8px;
+      background: var(--acid);
+      border-radius: 1px;
+      box-shadow: 0 0 12px var(--acid);
+    }
+    nav .links { display: flex; gap: 22px; font-size: 13px; }
+    nav a.link { color: var(--mute); text-decoration: none; transition: color .15s; }
+    nav a.link:hover { color: var(--ink); }
+    nav a.cta {
+      color: var(--acid);
+      text-decoration: none;
+      font-weight: 500;
+      border: 1px solid var(--acid);
+      padding: 6px 12px;
+      transition: all .15s;
+    }
+    nav a.cta:hover { background: var(--acid); color: var(--bg); }
+
+    /* ========== layout ========== */
+    main {
+      position: relative;
+      z-index: 2;
+      max-width: var(--max);
+      margin: 0 auto;
+      padding: 0 28px;
+    }
+    section { padding: 96px 0 72px; border-bottom: 1px dashed var(--line); }
+    section:last-of-type { border-bottom: none; }
+
+    .section-tag {
+      display: flex; align-items: baseline; gap: 14px;
+      margin-bottom: 28px;
+      font-size: 12px;
+      color: var(--mute);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .section-tag .num {
+      color: var(--acid);
+      font-weight: 700;
+    }
+    .section-tag .rule {
+      flex: 1;
+      height: 1px;
+      background: var(--line);
+    }
+    h2 {
+      font-size: clamp(28px, 4.2vw, 44px);
+      font-weight: 800;
+      letter-spacing: -0.025em;
+      color: var(--ink);
+      margin-bottom: 18px;
+      line-height: 1.05;
+    }
+    h2 .accent { color: var(--acid); }
+    section > p, section > .lede {
+      font-size: 16px;
+      color: var(--mute);
+      max-width: 64ch;
+      margin-bottom: 28px;
+    }
+    section > p strong { color: var(--ink); font-weight: 500; }
+
+    /* ========== hero ========== */
+    .hero {
+      min-height: 92vh;
+      display: flex; flex-direction: column; justify-content: center;
+      padding-top: 120px; padding-bottom: 60px;
+      border-bottom: 1px solid var(--line);
+      position: relative;
+    }
+    .hero .super {
+      font-size: 12px;
+      color: var(--acid);
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      margin-bottom: 28px;
+      display: inline-flex; align-items: center; gap: 10px;
+    }
+    .hero .super::before { content: '▸'; }
+    .hero h1 {
+      font-size: clamp(40px, 7.2vw, 84px);
+      font-weight: 800;
+      letter-spacing: -0.035em;
+      line-height: 0.98;
+      margin-bottom: 28px;
+      color: var(--ink);
+    }
+    .hero h1 .you-clone {
+      color: var(--acid);
+      position: relative;
+    }
+    .hero h1 .caret {
+      display: inline-block;
+      width: 0.55em;
+      height: 1em;
+      background: var(--acid);
+      vertical-align: -0.12em;
+      margin-left: 2px;
+      animation: blink 1s steps(2) infinite;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+    .hero .deck {
+      font-size: clamp(15px, 1.4vw, 18px);
+      color: var(--mute);
+      max-width: 60ch;
+      margin-bottom: 44px;
+    }
+    .hero .deck strong { color: var(--ink); font-weight: 500; }
+
+    /* ========== terminal ========== */
+    .term {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      box-shadow: 0 30px 80px -30px rgba(0,0,0,0.6),
+                  inset 0 1px 0 rgba(255,255,255,0.02);
+      position: relative;
+    }
+    .term .head {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface-2);
+      font-size: 11px;
+      color: var(--mute);
+      letter-spacing: 0.06em;
+    }
+    .term .head .dots { display: flex; gap: 6px; }
+    .term .head .dots span {
+      width: 9px; height: 9px;
+      border-radius: 50%;
+      background: var(--dim);
+    }
+    .term .head .dots span:first-child { background: #ff5f57; }
+    .term .head .dots span:nth-child(2) { background: #ffbd2e; }
+    .term .head .dots span:nth-child(3) { background: #28c941; }
+    .term .head .title { margin-left: 12px; font-size: 11px; color: var(--mute); }
+    .term .body {
+      padding: 18px 22px 22px;
+      font-size: 13.5px;
+      line-height: 1.7;
+      color: var(--ink);
+      white-space: pre;
+      overflow-x: auto;
+    }
+    .term .body .prompt { color: var(--acid); }
+    .term .body .out { color: var(--mute); }
+    .term .body .em { color: var(--ink); font-weight: 500; }
+    .term .body .ok { color: var(--green); }
+    .term .body .ghost { color: var(--dim); }
+    .term .body .voice { color: var(--acid); font-weight: 500; }
+
+    /* ========== install grid ========== */
+    .install-cards {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 16px;
+      margin-top: 18px;
+    }
+    @media (min-width: 720px) {
+      .install-cards { grid-template-columns: repeat(3, 1fr); }
+    }
+    .icard {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      padding: 22px 22px 24px;
+      position: relative;
+    }
+    .icard .step {
+      position: absolute;
+      top: -10px; left: 18px;
+      background: var(--bg);
+      color: var(--acid);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      padding: 0 8px;
+    }
+    .icard .what {
+      font-size: 13px;
+      color: var(--mute);
+      margin-top: 6px;
+      margin-bottom: 14px;
+    }
+    .icard code {
+      display: block;
+      font-size: 12.5px;
+      color: var(--ink);
+      word-break: break-all;
+    }
+    .icard code .acid { color: var(--acid); }
+
+    /* ========== ASCII diagram ========== */
+    .diagram {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      padding: 28px 22px;
+      font-size: 12.5px;
+      line-height: 1.55;
+      color: var(--ink);
+      white-space: pre;
+      overflow-x: auto;
+    }
+    .diagram .acid { color: var(--acid); }
+    .diagram .mute { color: var(--mute); }
+
+    /* ========== feature rows ========== */
+    .row2 {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 32px;
+      align-items: start;
+    }
+    @media (min-width: 760px) {
+      .row2 { grid-template-columns: 1.1fr 1fr; gap: 56px; }
+    }
+    .stat {
+      border-left: 2px solid var(--acid);
+      padding: 12px 0 12px 16px;
+      margin: 12px 0;
+    }
+    .stat .k { font-size: 12px; color: var(--mute); letter-spacing: 0.05em; text-transform: uppercase; }
+    .stat .v { font-size: 22px; color: var(--ink); font-weight: 500; margin-top: 2px; }
+
+    /* ========== privacy / cards ========== */
+    .pill-row {
+      display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px;
+    }
+    .pill {
+      font-size: 11.5px;
+      padding: 6px 12px;
+      border: 1px solid var(--line);
+      color: var(--mute);
+      letter-spacing: 0.04em;
+    }
+    .pill.on { color: var(--green); border-color: rgba(43, 214, 115, 0.4); }
+    .pill.off { color: var(--acid); border-color: rgba(255, 107, 53, 0.4); }
+
+    /* ========== footer ========== */
+    footer {
+      border-top: 1px solid var(--line);
+      padding: 36px 28px 60px;
+      max-width: var(--max);
+      margin: 0 auto;
+      font-size: 12px;
+      color: var(--mute);
+      display: flex; flex-wrap: wrap;
+      gap: 16px; align-items: baseline; justify-content: space-between;
+    }
+    footer a { color: var(--mute); text-decoration: none; transition: color .15s; }
+    footer a:hover { color: var(--ink); }
+    footer .cursor {
+      display: inline-block;
+      width: 0.6em; height: 1em;
+      background: var(--acid);
+      vertical-align: -0.15em;
+      animation: blink 1.2s steps(2) infinite;
+    }
+
+    /* ========== entrance anim ========== */
+    .reveal {
+      opacity: 0;
+      transform: translateY(8px);
+      animation: rise .8s cubic-bezier(.2,.7,.2,1) forwards;
+    }
+    .reveal.d1 { animation-delay: .05s; }
+    .reveal.d2 { animation-delay: .18s; }
+    .reveal.d3 { animation-delay: .32s; }
+    .reveal.d4 { animation-delay: .46s; }
+    @keyframes rise { to { opacity: 1; transform: none; } }
+
+    /* ========== misc ========== */
+    a.inline {
+      color: var(--acid);
+      text-decoration: none;
+      border-bottom: 1px solid currentColor;
+      padding-bottom: 1px;
+    }
+    a.inline:hover { color: var(--ink); border-color: var(--ink); }
+
+    .meta-grid {
+      display: grid; grid-template-columns: 110px 1fr; gap: 6px 18px;
+      font-size: 13px;
+    }
+    .meta-grid .k { color: var(--mute); letter-spacing: 0.04em; }
+    .meta-grid .v { color: var(--ink); }
+  </style>
+</head>
+<body>
+
+  <nav>
+    <div class="row">
+      <a class="brand" href="#top">voiceforge</a>
+      <div class="links">
+        <a class="link" href="#install">install</a>
+        <a class="link" href="#clone">clone</a>
+        <a class="link" href="#use">use</a>
+        <a class="link" href="#pipeline">pipeline</a>
+        <a class="cta" href="https://github.com/humancto/voice-forge">github →</a>
+      </div>
+    </div>
+  </nav>
+
+  <main id="top">
+
+    <!-- ========== HERO ========== -->
+    <section class="hero">
+      <div class="super reveal d1">local-first &nbsp;/&nbsp; gpt-sovits v2 &nbsp;/&nbsp; no cloud</div>
+      <h1 class="reveal d2">your terminal, in&nbsp;<span class="you-clone">any voice you clone</span><span class="caret"></span></h1>
+      <p class="deck reveal d3">build fails — Peter Griffin yells at you. tests pass — Trump tells you they're tremendous. your AI agent finishes — Stewie reports the body count. <strong>any voice, ~60s of clean audio, runs entirely on your machine.</strong></p>
+      <div class="reveal d4">
+        <div class="term" style="max-width: 720px;">
+          <div class="head">
+            <div class="dots"><span></span><span></span><span></span></div>
+            <div class="title">~/ — voiceforge</div>
+          </div>
+<div class="body"><span class="prompt">$</span> curl -fsSL https://raw.githubusercontent.com/humancto/voice-forge/main/install.sh | bash
+<span class="prompt">$</span> voiceforge install-cloning
+<span class="prompt">$</span> voiceforge clone <span class="voice">peter</span> ./peter_griffin_60s.wav
+<span class="prompt">$</span> voiceforge run -- npm test
+
+<span class="ghost">  ...20 minutes of silence, then a build failure...</span>
+<span class="out">🔊</span>  <span class="em">"holy crap lois, the build is on fire."</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== INSTALL ========== -->
+    <section id="install">
+      <div class="section-tag"><span class="num">01</span> <span>install</span> <span class="rule"></span> <span>~10 min, idempotent</span></div>
+      <h2>three commands. <span class="accent">that's the install.</span></h2>
+      <p class="lede">one curl-pipe-bash for the binary. one heavy install for the cloning runtime (you can skip if you only want the OS-native fallback voice). then you bring an audio file.</p>
+
+      <div class="install-cards">
+        <div class="icard">
+          <div class="step">STEP 1</div>
+          <div class="what">binary on your $PATH. detects OS+arch, builds from source.</div>
+          <code><span class="acid">$</span> curl -fsSL voiceforge.sh/install | bash</code>
+        </div>
+        <div class="icard">
+          <div class="step">STEP 2</div>
+          <div class="what">downloads the GPT-SoVITS v2 stack (~1.7&nbsp;GB). idempotent. macOS arm64 only for now.</div>
+          <code><span class="acid">$</span> voiceforge install-cloning</code>
+        </div>
+        <div class="icard">
+          <div class="step">STEP 3</div>
+          <div class="what">point at any clean local audio file ≥60s. one main + 5 aux refs, whisper-transcribed.</div>
+          <code><span class="acid">$</span> voiceforge clone peter ./peter.wav</code>
+        </div>
+      </div>
+
+      <p style="margin-top: 32px;">prereqs the installer expects: <strong>git</strong>, <strong>cargo</strong>, <strong>ffmpeg</strong>. it tells you exactly which is missing if any are. inspect-first variant for the curl-wary in the <a class="inline" href="https://github.com/humancto/voice-forge#quick-start">README</a>.</p>
+    </section>
+
+    <!-- ========== CLONE ========== -->
+    <section id="clone">
+      <div class="section-tag"><span class="num">02</span> <span>clone</span> <span class="rule"></span> <span>the proven recipe</span></div>
+      <h2>the recipe that <span class="accent">100% whisper-verified</span> on real Trump audio.</h2>
+
+      <div class="row2">
+        <div>
+          <p style="margin-bottom: 14px;">we tried XTTS, F5-TTS, GPT-SoVITS v2/v2Pro/v4. <strong>v2 with a 60s multi-aux-ref</strong> hit the sweet spot. the recipe:</p>
+          <div class="meta-grid">
+            <div class="k">source</div>      <div class="v">≥60s clean single-speaker audio (you bring it)</div>
+            <div class="k">trim</div>        <div class="v">6 × 10s windows, loudnorm'd, mono 32kHz</div>
+            <div class="k">transcribe</div>  <div class="v">Whisper per chunk → prompt_text</div>
+            <div class="k">backend</div>     <div class="v">GPT-SoVITS v2 (1 main + 5 aux refs)</div>
+            <div class="k">latency</div>     <div class="v">~15s cold model load, ~3s synth thereafter</div>
+            <div class="k">cache</div>       <div class="v">sha256(text + voice + created_at)</div>
+          </div>
+
+          <div class="stat">
+            <div class="k">verified output / Trump</div>
+            <div class="v">3/3 lines @ 100% Whisper match</div>
+          </div>
+        </div>
+
+        <div class="term">
+          <div class="head">
+            <div class="dots"><span></span><span></span><span></span></div>
+            <div class="title">voiceforge clone</div>
+          </div>
+<div class="body"><span class="prompt">$</span> voiceforge clone trump ./speech_clean.wav
+<span class="out">==></span> voiceforge clone trump
+<span class="out">==></span> transcoding local source
+<span class="out">==></span> duration check (≥60s)
+<span class="out">    duration 60.00s</span>
+<span class="out">==></span> staging into trump.partial/
+<span class="out">==></span> whisper-transcribing 6 chunks
+<span class="ghost">    ref_main: forces in ruins. their leaders...</span>
+<span class="ghost">    aux_1:    command and control of the IRGC...</span>
+<span class="ghost">    aux_2:    launch missiles and drones...</span>
+<span class="out">==></span> writing profile.toml
+<span class="out">==></span> promoting trump.partial/ → trump/
+<span class="ok">==></span> done
+
+  voice:   <span class="voice">trump</span>
+  next:    voiceforge say --voice trump --text "..."</div>
+        </div>
+      </div>
+
+      <p style="margin-top: 36px; color: var(--mute);">a word on quality: <strong style="color: var(--ink)">stylized cartoon voices</strong> (Peter, Stewie, Quagmire) approach ~70% timbre fidelity zero-shot — the model averages distinctive cartoon timbres against its training distribution. real human voices (Trump, Obama, your colleague) get closer to 95%. fine-tuning is the path to 99%, on the roadmap.</p>
+    </section>
+
+    <!-- ========== USE ========== -->
+    <section id="use">
+      <div class="section-tag"><span class="num">03</span> <span>use</span> <span class="rule"></span> <span>terminal-native</span></div>
+      <h2>speak any line. <span class="accent">react to any command.</span></h2>
+
+      <div class="install-cards" style="grid-template-columns: 1fr; gap: 24px; max-width: 720px;">
+        <div class="term">
+          <div class="head">
+            <div class="dots"><span></span><span></span><span></span></div>
+            <div class="title">say — one-shot</div>
+          </div>
+<div class="body"><span class="prompt">$</span> voiceforge say --voice <span class="voice">peter</span> --text "the build is on fire"
+<span class="out">🔊</span>  <span class="em">"the build is on fire."</span></div>
+        </div>
+
+        <div class="term">
+          <div class="head">
+            <div class="dots"><span></span><span></span><span></span></div>
+            <div class="title">run — wraps a command, reacts on success/fail</div>
+          </div>
+<div class="body"><span class="prompt">$</span> voiceforge run -- cargo test
+<span class="ghost">   Compiling voiceforge v0.1.0
+    Finished test [unoptimized + debuginfo] target(s) in 12.4s
+     Running unittests src/main.rs
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured</span>
+<span class="out">🔊</span>  <span class="em">"holy crap, cargo just chose violence."</span>
+
+<span class="prompt">$</span> voiceforge run -- npm test
+<span class="ghost">  ✓ 47 tests passing</span>
+<span class="out">🔊</span>  <span class="em">"oh that's nice. the tests passed."</span></div>
+        </div>
+
+        <div class="term">
+          <div class="head">
+            <div class="dots"><span></span><span></span><span></span></div>
+            <div class="title">doctor — system check</div>
+          </div>
+<div class="body"><span class="prompt">$</span> voiceforge doctor
+voiceforge 0.1.0 — system check
+
+<span class="ok">[OK]</span>    binary           /usr/local/bin/voiceforge
+<span class="ok">[OK]</span>    home             ~/.voiceforge
+<span class="ok">[OK]</span>    audio backend    rodio (CoreAudio)
+<span class="ok">[OK]</span>    embedded TTS     macOS say
+<span class="ok">[OK]</span>    cloning          GPT-SoVITS @ 08d627c
+<span class="ok">[OK]</span>    presets          5 installed
+<span class="ok">[OK]</span>    config.toml      active_voice = "default"
+
+ok: 9   warn: 0   error: 0</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== PIPELINE / DIAGRAM ========== -->
+    <section id="pipeline">
+      <div class="section-tag"><span class="num">04</span> <span>pipeline</span> <span class="rule"></span> <span>under the hood</span></div>
+      <h2>two layers. <span class="accent">all local.</span></h2>
+      <p>rust CLI for the dev-side surface (install, clone, say, run, doctor, daemon) and a python venv that hosts GPT-SoVITS v2. the synth is a long-lived NDJSON child — model loads once per process, warm for every call after that.</p>
+
+<div class="diagram">         <span class="mute">terminal event                           voiceforge process</span>
+<span class="mute">         (build, test, git, agent)</span>
+                <span class="mute">│</span>
+                <span class="mute">▼</span>
+       ┌─────────────────────┐         ┌──────────────────────────┐
+       <span class="acid">│ apps/voiceforge-cli │</span>         <span class="acid">│ scripts/cloning_synth.py │</span>
+       <span class="acid">│ (Rust, async tokio) │</span>  ───►   <span class="acid">│ (Python, GPT-SoVITS v2)  │</span>
+       <span class="acid">│                     │</span>  NDJSON   <span class="acid">│                          │</span>
+       <span class="acid">│ rule engine         │</span>  stdin    <span class="acid">│ lazy load                │</span>
+       <span class="acid">│ engine facade       │</span>  stdout   <span class="acid">│ 1 main + 5 aux refs      │</span>
+       <span class="acid">│ ~/.voiceforge/cache │</span>         <span class="acid">│ atomic write             │</span>
+       └─────────────────────┘         └──────────────────────────┘
+                <span class="mute">│</span>                                <span class="mute">│</span>
+                <span class="mute">│  embedded fallback             │  cached .wav under</span>
+                <span class="mute">│  (macOS say / espeak-ng)       │  ~/.voiceforge/cache/</span>
+                <span class="mute">▼</span>                                <span class="mute">▼</span>
+       ┌─────────────────────────────────────────────────────────┐
+       <span class="acid">│                   rodio (CoreAudio / ALSA)              │</span>
+       └─────────────────────────────────────────────────────────┘
+                <span class="mute">│</span>
+                <span class="mute">▼</span>
+       <span class="acid">         🔊  speakers go brrrr</span></div>
+
+      <p style="margin-top: 32px;">three engines, one façade. <strong>Engine::Embedded</strong> shells to <code>say</code> / <code>espeak-ng</code> for the default voice (no Python required). <strong>Engine::Server</strong> talks to a Flask server when <code>VOICEFORGE_TTS_URL</code> is set. <strong>Engine::Cloning</strong> spawns the long-lived NDJSON child. <code>Engine::speak(text, voice)</code> dispatches per-call based on whether the voice name matches a cloned profile.</p>
+    </section>
+
+    <!-- ========== PRIVACY ========== -->
+    <section id="privacy">
+      <div class="section-tag"><span class="num">05</span> <span>privacy</span> <span class="rule"></span> <span>what stays on your machine</span></div>
+      <h2>local-first. <span class="accent">by design, not by promise.</span></h2>
+
+      <div class="row2">
+        <div>
+          <p>voiceforge has zero accounts, zero cloud TTS, zero outbound calls beyond the one-time model download from HuggingFace. your reference audio, your cloned voices, your reaction text, the synth output — never leaves <code>~/.voiceforge/</code>.</p>
+          <p style="margin-top: 14px;">the codebase is open. the install script you can <code>less</code> first. the synth process you can <code>strace</code>. the model weights are on disk.</p>
+
+          <div class="pill-row" style="margin-top: 22px;">
+            <span class="pill on">✓ local synth</span>
+            <span class="pill on">✓ local audio</span>
+            <span class="pill on">✓ local cache</span>
+            <span class="pill off">✗ no accounts</span>
+            <span class="pill off">✗ no telemetry</span>
+            <span class="pill off">✗ no cloud TTS</span>
+          </div>
+        </div>
+
+        <div>
+          <div class="stat">
+            <div class="k">backend</div>
+            <div class="v">GPT-SoVITS v2 (open source, MIT)</div>
+          </div>
+          <div class="stat">
+            <div class="k">first-run download</div>
+            <div class="v">~1.7 GB from huggingface.co/lj1995/GPT-SoVITS</div>
+          </div>
+          <div class="stat">
+            <div class="k">runtime network</div>
+            <div class="v">none</div>
+          </div>
+          <div class="stat">
+            <div class="k">license</div>
+            <div class="v">MIT</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <footer>
+    <div>
+      voiceforge<span class="cursor"></span>&nbsp;&nbsp;<span style="color: var(--dim);">&copy; 2026 — open source, MIT</span>
+    </div>
+    <div>
+      <a href="https://github.com/humancto/voice-forge">github</a>&nbsp;·&nbsp;
+      <a href="https://github.com/humancto/voice-forge/blob/main/ROADMAP.md">roadmap</a>&nbsp;·&nbsp;
+      <a href="https://github.com/humancto/voice-forge/issues">issues</a>
+    </div>
+  </footer>
+
+  <script>
+    // typewriter effect on the hero accent only — subtle, runs once on load
+    (() => {
+      const el = document.querySelector('.you-clone');
+      if (!el) return;
+      const original = el.textContent;
+      el.textContent = '';
+      let i = 0;
+      const speed = 32;
+      function type() {
+        if (i < original.length) {
+          el.textContent += original.charAt(i++);
+          setTimeout(type, speed);
+        }
+      }
+      // start after the headline reveal animation
+      setTimeout(type, 380);
+    })();
+  </script>
+</body>
+</html>
