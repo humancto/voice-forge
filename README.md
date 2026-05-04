@@ -183,12 +183,10 @@ The full backlog and per-item status lives in [`ROADMAP.md`](ROADMAP.md). Curren
 
 ## Project docs
 
+- [Website](https://humancto.github.io/voice-forge/) — install, clone, use, pipeline overview
 - [`ROADMAP.md`](ROADMAP.md) — the build plan, one PR per item
-- [`docs/PRODUCT_WRITEUP.md`](docs/PRODUCT_WRITEUP.md) — what we're building and why
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — runtime + voice resolution
-- [`docs/TECHNICAL_SPEC.md`](docs/TECHNICAL_SPEC.md) — CLI + server API
-- [`docs/FINE_TUNING_GUIDE.md`](docs/FINE_TUNING_GUIDE.md) — when embeddings aren't enough
-- [`docs/ADOPTION_AND_PRODUCT_DIRECTION.md`](docs/ADOPTION_AND_PRODUCT_DIRECTION.md) — strategic frame
+- [`docs/MAC_INSTALL.md`](docs/MAC_INSTALL.md) — what works on which Mac (arm64 vs Intel, OS versions, gotchas)
+- [`docs/FINE_TUNING_GUIDE.md`](docs/FINE_TUNING_GUIDE.md) — the path to ~99% on stylized character voices
 
 ## Test fixtures
 
