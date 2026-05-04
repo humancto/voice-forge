@@ -57,6 +57,7 @@ fn walk_up_for(start: &Path, sibling: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn walk_up_finds_sibling_in_ancestor() {
@@ -76,6 +77,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn user_home_prefers_env_override() {
         // Use a tempdir so we don't depend on the host env.
         let tmp = tempfile::tempdir().expect("tempdir");
