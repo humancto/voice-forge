@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "voice_source": "Barack Obama — former president, public speeches",
+  "tier": "public-figure",
+  "reference_clip": "../../tests/fixtures/obama_clean_32k.wav",
+  "reference_prompt_text": "(populate from whisper after a clean ~60s clip is selected)",
+  "phrases": {
+    "build_success": "Now look. The build has passed. And that, my friends, is what we call progress.",
+    "build_failed": "Now, the build has failed. And that's frustrating. I get it. But we are going to fix it. Together.",
+    "tests_passed": "The tests have passed. And let me tell you, that did not happen by accident.",
+    "tests_failed": "Now look. Some of the tests have failed. And we have to be honest about that. So let's get to work.",
+    "lint_error": "Now, the linter has raised some concerns. And those concerns, while pedantic, are valid.",
+    "type_error": "The types don't match. Now look, there is a place for strict typing. And that place is everywhere.",
+    "deploy_success": "We have shipped to production. And let me say, this is a big deal.",
+    "deploy_failed": "The deployment didn't work. Now, I'm not going to sugarcoat it. We've got work to do.",
+    "commit_success": "You committed your changes. And that's a good first step. The first of many.",
+    "push_rejected": "Now look. Your push was rejected. And we have to ask ourselves why. Was the diff too big? Was it the conflict? These are the questions.",
+    "secret_detected": "Now look. You committed your API key. To a public repository. We have to talk about operational security. Seriously.",
+    "agent_done": "The AI has finished its task. And that's something we couldn't have imagined ten years ago. Let that sink in.",
+    "agent_stuck": "The AI is stuck. And that's okay. We don't always have the answer. The important thing is to keep going."
+  }
+}

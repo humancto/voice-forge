@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "voice_source": "Bob Ross — Joy of Painting (PBS, public broadcasting)",
+  "tier": "public-figure",
+  "reference_clip": "../../tests/fixtures/bob_ross_clean_32k.wav",
+  "reference_prompt_text": "(populate from whisper after a clean ~60s Joy-of-Painting narration clip is selected)",
+  "phrases": {
+    "build_success": "Well, isn't that something. Your build compiled. Beautiful. Just beautiful.",
+    "build_failed": "Oh, looks like the build didn't pass. That's okay. There are no failures, just happy little errors.",
+    "tests_passed": "All your tests passed. We'll just leave that right there. Beautiful work.",
+    "tests_failed": "Some of your tests didn't pass. That's all right. Every bug is just a happy accident waiting to be a feature.",
+    "lint_error": "Your linter found something. We'll just blend that in, real gentle. There we go.",
+    "type_error": "The types don't quite match. That's okay. We'll just give them a little nudge until they're friends again.",
+    "deploy_success": "Your code is in production now. It lives there. You've made a beautiful little world for it.",
+    "deploy_failed": "Looks like the deploy didn't take. That's okay. We can always paint right over it and try again.",
+    "commit_success": "You've committed your changes. Just like that. They're going to live in the repository forever now.",
+    "push_rejected": "Your push got rejected. That's all right. Sometimes the canvas just isn't ready yet.",
+    "secret_detected": "Looks like a little secret slipped into your commit. We'll just rotate that key, real quick. Easy peasy.",
+    "agent_done": "Your little AI friend finished its work. Look at that. Just look at it.",
+    "agent_stuck": "Looks like the AI got a little lost. That's okay. Even artists get stuck sometimes."
+  }
+}

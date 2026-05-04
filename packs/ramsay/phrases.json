@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "voice_source": "Gordon Ramsay — chef, host of Hell's Kitchen / MasterChef",
+  "tier": "public-figure",
+  "reference_clip": "../../tests/fixtures/ramsay_clean_32k.wav",
+  "reference_prompt_text": "(populate from whisper after a clean ~60s clip is selected)",
+  "phrases": {
+    "build_success": "Bloody hell, the build passed. First time tonight you've done something right.",
+    "build_failed": "The build is on fire. WHAT IS THIS? You call this a build? It's a disaster!",
+    "tests_passed": "Tests passed. Finally. You've finally cooked something edible.",
+    "tests_failed": "Tests failed. WHAT IS THIS? You call this code? IT'S RAW!",
+    "lint_error": "Your linter is screaming at you. It's right to scream. This is a mess.",
+    "type_error": "Types don't match. THE TYPES DON'T MATCH. Are you serious right now?",
+    "deploy_success": "You shipped to production. Don't look so proud, that was the bare minimum.",
+    "deploy_failed": "The deploy is broken. You've broken it. Get out. Get OUT of my kitchen.",
+    "commit_success": "You committed. Took you long enough. Now don't break it.",
+    "push_rejected": "Your push was rejected. Even git can't stomach what you've written.",
+    "secret_detected": "You committed your bloody API key. To the public internet. ARE YOU AN IDIOT? Rotate it. Now.",
+    "agent_done": "The AI is finished. Let me see what you've made. Oh, dear god.",
+    "agent_stuck": "The AI gave up. Even the machine couldn't finish your task. That's a new low."
+  }
+}

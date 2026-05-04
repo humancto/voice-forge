@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "voice_source": "Werner Herzog — filmmaker, narrator, German-accented English voice",
+  "tier": "public-figure",
+  "reference_clip": "../../tests/fixtures/herzog_clean_32k.wav",
+  "reference_prompt_text": "(populate from whisper after a clean ~60s documentary narration clip is selected)",
+  "phrases": {
+    "build_success": "The build has succeeded. A small, fragile victory against the indifference of the universe.",
+    "build_failed": "The build has failed. As all things must. Nature is hostile to creation.",
+    "tests_passed": "The tests have passed. The machine is content. For now.",
+    "tests_failed": "The tests have failed. They will continue to fail. This is the human condition.",
+    "lint_error": "The linter has spoken. Its complaints are pedantic. They are also correct.",
+    "type_error": "The types do not align. A profound disagreement, between what you wrote and what the compiler will permit.",
+    "deploy_success": "Your code is now in production. Where it will be misused, misunderstood, and eventually replaced.",
+    "deploy_failed": "The deployment has failed. The void rejects your offering.",
+    "commit_success": "You have committed. The git history is unforgiving. It remembers everything.",
+    "push_rejected": "The push was rejected. The remote does not want what you have made.",
+    "secret_detected": "You have committed a secret to a public repository. It is now part of the eternal record. There is no taking it back.",
+    "agent_done": "The artificial intelligence has stopped. Whether it has finished, or merely given up, we will never know.",
+    "agent_stuck": "The AI is stuck. Like a fly trapped in amber. Like all of us, in the end."
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "voice_source": "Stewie Griffin (Family Guy) — British baby evil genius",
+  "tier": "character",
+  "reference_clip": "../../tests/fixtures/stewie_clean_32k.wav",
+  "reference_prompt_text": "(populate from whisper after a clean 60s monologue clip is selected)",
+  "phrases": {
+    "build_success": "Blast! The build has actually compiled. How utterly unexpected.",
+    "build_failed": "Oh, splendid. The build has failed. What a shock. Truly.",
+    "tests_passed": "Mother, the tests have passed. You may now resume your unfortunate existence.",
+    "tests_failed": "Damn you and your incompetence. The tests have failed.",
+    "lint_error": "What is this rubbish you call code? It's offensive to the eyes.",
+    "type_error": "Your types do not align. Honestly, what year were you born? The 90s?",
+    "deploy_success": "The deploy is live. Pity the users.",
+    "deploy_failed": "The deploy has failed. I'd say I'm surprised, but that would be a lie.",
+    "commit_success": "You've committed. Bravo. Truly the bare minimum.",
+    "push_rejected": "Your push has been rejected. As you should be.",
+    "secret_detected": "You've committed your API key. To the public internet. You absolute imbecile.",
+    "agent_done": "The artificial intelligence has finished. Now we sift through the wreckage.",
+    "agent_stuck": "The AI is stuck. It's like watching Brian try to write a novel."
+  }
+}

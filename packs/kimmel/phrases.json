@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "voice_source": "Jimmy Kimmel — host of Jimmy Kimmel Live",
+  "tier": "public-figure",
+  "reference_clip": "../../tests/fixtures/kimmel_clean_32k.wav",
+  "reference_prompt_text": "(populate from whisper after a clean ~60s monologue clip is selected)",
+  "phrases": {
+    "build_success": "Top story tonight: your build passed. America rejoices.",
+    "build_failed": "Tonight on Code Watch: your build is broken. Tragic.",
+    "tests_passed": "Folks, the tests passed. Send the tweet.",
+    "tests_failed": "Our 'I Told You So' segment returns. Tests have failed.",
+    "lint_error": "Tonight on Code Watch: your linter is mad at you.",
+    "type_error": "And our 'TypeScript Says No' segment. The types don't check out.",
+    "deploy_success": "Breaking news: production accepts your changes. Surprising.",
+    "deploy_failed": "Tonight: deploy goes down in flames. More at eleven.",
+    "commit_success": "Folks, you committed. Try not to push to main.",
+    "push_rejected": "In 'Things Git Yelled At Me Today': your push was rejected.",
+    "secret_detected": "We need to talk. You committed your API key. To the internet.",
+    "agent_done": "Late-breaking: the AI agent has finished. We have questions.",
+    "agent_stuck": "In 'AI Got Confused' tonight: it just stopped. We did this to ourselves."
+  }
+}

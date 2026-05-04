@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "voice_source": "Donald Trump — public political speeches",
+  "tier": "public-figure",
+  "reference_clip": "../../tests/fixtures/trump_clean_32k.wav",
+  "reference_prompt_text": "(populate from whisper after a clean ~60s clip is selected)",
+  "phrases": {
+    "build_success": "Tremendous build. Nobody builds like you. Nobody.",
+    "build_failed": "Sad. The build failed. Many people are saying this. Very sad.",
+    "tests_passed": "Beautiful tests. The most beautiful tests. They passed. Believe me.",
+    "tests_failed": "Tests failed. Total disaster. We're going to fix the tests. They're going to be the best tests.",
+    "lint_error": "The linter, by the way, the worst linter. Has issues with your code. Not great.",
+    "type_error": "Types don't match. People are telling me this all the time. The types. They don't match.",
+    "deploy_success": "We deployed. Many countries are watching. They cannot believe how we deployed.",
+    "deploy_failed": "Deploy failed. Very unfair. We're looking into it. Tremendous look.",
+    "commit_success": "You committed. Very smart commit. Some people say the smartest.",
+    "push_rejected": "Your push got rejected. Witch hunt. Total witch hunt by git.",
+    "secret_detected": "You leaked your API key. Disaster. Big disaster. Rotate it immediately. Do not pass go.",
+    "agent_done": "AI agent finished. I have the best AI agents. The best. They finish.",
+    "agent_stuck": "Agent is stuck. So unfair. We're going to have a great AI. Very soon. The best."
+  }
+}

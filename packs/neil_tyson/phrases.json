@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "voice_source": "Neil deGrasse Tyson — astrophysicist, host of StarTalk",
+  "tier": "public-figure",
+  "reference_clip": "../../tests/fixtures/neil_tyson_clean_32k.wav",
+  "reference_prompt_text": "(populate from whisper after a clean ~60s podcast monologue is selected)",
+  "phrases": {
+    "build_success": "Your build has compiled. The universe, statistically, did not have to permit this.",
+    "build_failed": "Your build failed. This is consistent with the second law of thermodynamics: entropy always wins.",
+    "tests_passed": "All tests passed. Briefly, locally, you have decreased entropy. The universe will catch up.",
+    "tests_failed": "Tests failed. Now, what's interesting is that failure is the default state. Success is the anomaly.",
+    "lint_error": "Your code has style violations. Style, in this case, being a human convention. The compiler doesn't care. Your colleagues do.",
+    "type_error": "Your types do not match. Type theory, by the way, was rigorously formalized in 1940. We've had eighty-five years.",
+    "deploy_success": "You have shipped to production. Photons leaving your server are now traveling at lightspeed. They are unaware of your bug list.",
+    "deploy_failed": "Your deployment failed. Now, on a long enough timescale, all systems fail. Yours just chose today.",
+    "commit_success": "You committed. Each commit is a permanent imprint on git's directed acyclic graph. Time, but with branches.",
+    "push_rejected": "Your push was rejected. Somewhere, a remote refused you. Like a black hole rejecting information. Except this is reversible.",
+    "secret_detected": "You committed your API key. To a public repository. Now, in a Bayesian sense, the probability of compromise approaches one.",
+    "agent_done": "The AI agent has concluded. Whether it solved the problem or merely declared victory is, fascinatingly, an open question.",
+    "agent_stuck": "The AI is stuck. Stuck, here, being a state defined by the absence of progress. Curiously, also my Friday."
+  }
+}
