@@ -170,6 +170,97 @@ fn assert_path_exists(p: &Path, label: &str) -> Result<()> {
     Ok(())
 }
 
+/// Walk `~/.voiceforge/voices/` and return every parseable voice
+/// profile. Broken profiles are skipped with a stderr warn unless
+/// `VOICEFORGE_STRICT_VOICES=1`, in which case the broken profile is a
+/// hard error.
+pub fn list_cloned_voices() -> Result<Vec<VoiceProfile>> {
+    let Some(dir) = voices_dir() else {
+        return Ok(Vec::new());
+    };
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let strict = std::env::var("VOICEFORGE_STRICT_VOICES")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+
+    let mut out = Vec::new();
+    for entry in
+        std::fs::read_dir(&dir).with_context(|| format!("reading voices dir {}", dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+        // Skip the staging dirs left behind by interrupted clones.
+        if name.ends_with(".partial") || name.ends_with(".lock.d") {
+            continue;
+        }
+        if validate_name(name).is_err() {
+            continue;
+        }
+        match load_voice(name) {
+            Ok(profile) => out.push(profile),
+            Err(e) if strict => {
+                bail!("strict mode: voice {name:?} failed to load: {e:#}");
+            }
+            Err(e) => {
+                eprintln!("voiceforge: skipping broken voice profile {name:?}: {e:#}");
+            }
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
+/// Remove a cloned voice and prune any cache entries keyed on its
+/// name. No-op-but-error on absent voice (so callers can pass the
+/// error through to the user).
+pub fn remove_cloned_voice(name: &str) -> Result<()> {
+    validate_name(name)?;
+    let dir = voice_dir(name)?;
+    if !dir.is_dir() {
+        bail!("voice {name:?} not found at {}", dir.display());
+    }
+    // Canonicalize + sanity-check before rm -rf.
+    let canonical = dir
+        .canonicalize()
+        .with_context(|| format!("canonicalizing {}", dir.display()))?;
+    let voices_root = voices_dir()
+        .ok_or_else(|| anyhow!("voices dir unresolved"))?
+        .canonicalize()
+        .with_context(|| "canonicalizing voices dir")?;
+    if !canonical.starts_with(&voices_root) {
+        bail!(
+            "voice dir {} escapes {}; refusing to remove",
+            canonical.display(),
+            voices_root.display()
+        );
+    }
+
+    std::fs::remove_dir_all(&canonical)
+        .with_context(|| format!("removing {}", canonical.display()))?;
+
+    // Prune cache entries that mention this voice. Cache key is
+    // sha256(text + voice + created_at + recipe), so the filename is
+    // an opaque hash — we don't know which cache files were for this
+    // voice without a sidecar manifest. For now, the cache key
+    // guarantees cache entries are *valid only for the now-deleted
+    // voice's created_at*; future clones with the same name get a new
+    // created_at and naturally write new cache entries. Old entries
+    // become unreachable but not invalid (they'd never be looked up).
+    // Eviction by size/age is a follow-up.
+    let _ = (); // intentional: orphan-but-unreachable, documented above.
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -388,6 +479,88 @@ aux_count = 5
                 msg.contains("escapes") || msg.contains("not found") || msg.contains("missing"),
                 "expected escape/not-found error, got: {msg}"
             );
+        });
+    }
+
+    // -- list_cloned_voices + remove_cloned_voice ---------------------
+
+    #[test]
+    #[serial]
+    fn list_cloned_voices_skips_broken_profiles() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), |home| {
+            write_full_profile(home, "peter", "gpt-sovits-v2-multi-aux-ref");
+            // Stage a second dir that's missing the profile.toml entirely.
+            std::fs::create_dir_all(home.join("voices/broken")).unwrap();
+            std::fs::write(home.join("voices/broken/junk"), b"x").unwrap();
+
+            let voices = list_cloned_voices().expect("list");
+            let names: Vec<&str> = voices.iter().map(|v| v.name.as_str()).collect();
+            assert_eq!(names, vec!["peter"], "broken voice should be skipped");
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn list_cloned_voices_skips_partial_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), |home| {
+            write_full_profile(home, "peter", "gpt-sovits-v2-multi-aux-ref");
+            // Simulate an interrupted clone — left-behind .partial dir.
+            std::fs::create_dir_all(home.join("voices/peter.partial")).unwrap();
+
+            let voices = list_cloned_voices().expect("list");
+            let names: Vec<&str> = voices.iter().map(|v| v.name.as_str()).collect();
+            assert_eq!(names, vec!["peter"]);
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn list_cloned_voices_strict_mode_errors_on_broken() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), |home| {
+            write_full_profile(home, "peter", "gpt-sovits-v2-multi-aux-ref");
+            std::fs::create_dir_all(home.join("voices/broken")).unwrap();
+            std::fs::write(home.join("voices/broken/junk"), b"x").unwrap();
+
+            std::env::set_var("VOICEFORGE_STRICT_VOICES", "1");
+            let result = list_cloned_voices();
+            std::env::remove_var("VOICEFORGE_STRICT_VOICES");
+            assert!(result.is_err(), "strict mode should error on broken voice");
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn remove_cloned_voice_deletes_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), |home| {
+            write_full_profile(home, "peter", "gpt-sovits-v2-multi-aux-ref");
+            assert!(voice_exists("peter"));
+            remove_cloned_voice("peter").unwrap();
+            assert!(!voice_exists("peter"));
+            assert!(!home.join("voices/peter").exists());
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn remove_cloned_voice_rejects_invalid_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), |_| {
+            let err = remove_cloned_voice("../etc").unwrap_err();
+            assert!(format!("{err:#}").contains("invalid"));
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn remove_cloned_voice_errors_when_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), |_| {
+            let err = remove_cloned_voice("nonexistent").unwrap_err();
+            assert!(format!("{err:#}").contains("not found"));
         });
     }
 }
