@@ -8,10 +8,6 @@
 //! Loading a voice asserts every referenced file exists, the recipe is
 //! known, and the schema matches.
 
-// Until tts.rs Engine::Cloning + clone.rs land in subsequent commits of
-// this PR, the public items are unused. Removed in the wiring commit.
-#![allow(dead_code)]
-
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
