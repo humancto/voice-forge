@@ -108,7 +108,7 @@ fn ingest_fixture_yields_canonical_wav() {
         .expect("audio stream in output");
     let format = &probe["format"];
 
-    assert_eq!(stream["sample_rate"].as_str(), Some("22050"));
+    assert_eq!(stream["sample_rate"].as_str(), Some("32000"));
     assert_eq!(stream["channels"].as_u64(), Some(1));
     assert_eq!(stream["codec_name"].as_str(), Some("pcm_s16le"));
 

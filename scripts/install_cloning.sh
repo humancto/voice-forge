@@ -252,13 +252,15 @@ done
 
 PRETRAIN_DIR="$REPO_DIR/GPT_SoVITS/pretrained_models"
 mkdir -p "$PRETRAIN_DIR"
-step "downloading $HF_MODEL_REPO (v2 subset, ~1.7 GB) — resumable"
-run retry 3 10 "$VENV_DIR/bin/huggingface-cli" download "$HF_MODEL_REPO" \
-  --include 'gsv-v2final-pretrained/*' \
-  --include 'chinese-hubert-base/*' \
-  --include 'chinese-roberta-wwm-ext-large/*' \
-  --local-dir "$PRETRAIN_DIR" \
-  --local-dir-use-symlinks False
+step "downloading $HF_MODEL_REPO (v2 subset + sv, ~1.8 GB) — resumable"
+# huggingface-cli 0.27.x silently honors only one --include glob; loop one
+# pattern per call to dodge that. sv/ added for ERes2NetV2 dep introduced at
+# pinned SHA. --local-dir-use-symlinks dropped (warns "Ignoring" since 0.27).
+for pat in 'gsv-v2final-pretrained/*' 'chinese-hubert-base/*' 'chinese-roberta-wwm-ext-large/*' 'sv/*'; do
+  run retry 3 10 "$VENV_DIR/bin/huggingface-cli" download "$HF_MODEL_REPO" \
+    --include "$pat" \
+    --local-dir "$PRETRAIN_DIR"
+done
 
 # -- 11. sha256-verify load-bearing files ----------------------------
 
@@ -297,14 +299,16 @@ run env NLTK_DATA="$NLTK_DATA_DIR" \
 # -- 13. smoke test ---------------------------------------------------
 
 step "smoke test: importing GPT-SoVITS TTS class"
+# GPT_SoVITS/sv.py uses os.getcwd()-relative paths to find ERes2NetV2 + the
+# sv ckpt; the clone runtime cd's into REPO_DIR, so this smoke test must too.
 if [[ "$DRY_RUN" != "1" ]]; then
-  DYLD_FALLBACK_LIBRARY_PATH="$FFMPEG6_PREFIX/lib" \
+  ( cd "$REPO_DIR" && DYLD_FALLBACK_LIBRARY_PATH="$FFMPEG6_PREFIX/lib" \
     "$PYTHON" -c "
 import sys
-sys.path.insert(0, '$REPO_DIR'); sys.path.insert(0, '$REPO_DIR/GPT_SoVITS')
+sys.path.insert(0, '.'); sys.path.insert(0, 'GPT_SoVITS')
 from GPT_SoVITS.TTS_infer_pack.TTS import TTS, TTS_Config
 print('TTS imports clean')
-" || die "smoke import failed; check $LOG_FILE"
+" ) || die "smoke import failed; check $LOG_FILE"
 fi
 
 # -- 14. write marker -------------------------------------------------

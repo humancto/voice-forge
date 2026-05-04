@@ -68,8 +68,8 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Transcode any audio source into a canonical XTTS-ready WAV
-    /// (22050 Hz mono 16-bit PCM, 10–60 s).
+    /// Transcode any audio source into a canonical GPT-SoVITS-ready WAV
+    /// (32000 Hz mono 16-bit PCM, 10–60 s).
     Ingest {
         /// Path to the source audio (wav/mp3/m4a/ogg/flac/aiff/webm/...).
         input: PathBuf,

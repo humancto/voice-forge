@@ -18,10 +18,20 @@ from pathlib import Path
 
 EXPECTED_GPT_SOVITS_SHA = "08d627c3338173c3229286d8787060d6559fe0f8"
 
+# torch / GPT-SoVITS spill warnings + load progress to stdout. Capture the
+# real stdout for our NDJSON protocol BEFORE anything imports them, then
+# point sys.stdout at stderr so framework chatter never poisons the parser.
+_PROTOCOL_STDOUT = sys.stdout
+sys.stdout = sys.stderr
+
+
+def emit(obj: dict) -> None:
+    _PROTOCOL_STDOUT.write(json.dumps(obj) + "\n")
+    _PROTOCOL_STDOUT.flush()
+
 
 def fail(error: str, exit_code: int = 1) -> None:
-    sys.stdout.write(json.dumps({"ok": False, "error": error}) + "\n")
-    sys.stdout.flush()
+    emit({"ok": False, "error": error})
     sys.exit(exit_code)
 
 
@@ -69,14 +79,21 @@ def synth(tts, voices_dir: Path, voice: str, text: str, out_path: Path):
         "aux_ref_audio_paths": aux_refs,
         "prompt_text": main_prompt,
         "prompt_lang": "en",
-        "top_k": 5,
+        # GPT-SoVITS-recommended defaults. Earlier values were aggressive
+        # (top_k=5, speed_factor=1.1, cut5, fragment_interval=0.3) which
+        # produced "echoey / from a well" artifacts: low top_k = stiff
+        # token sampling; speed_factor != 1.0 = resampling phasing;
+        # cut5 + 300ms inter-fragment gap = audible silence tails that
+        # sound like reverb decay when concatenated. cut0 keeps short
+        # phrases intact; bump top_k to standard 15 for natural variation.
+        "top_k": 15,
         "top_p": 1.0,
         "temperature": 1.0,
-        "text_split_method": "cut5",
+        "text_split_method": "cut0",
         "batch_size": 1,
-        "speed_factor": 1.1,
+        "speed_factor": 1.0,
         "split_bucket": True,
-        "fragment_interval": 0.3,
+        "fragment_interval": 0.2,
         "return_fragment": False,
     }
 
@@ -91,7 +108,9 @@ def synth(tts, voices_dir: Path, voice: str, text: str, out_path: Path):
     audio = np.concatenate(chunks) if len(chunks) > 1 else chunks[0]
 
     tmp = out_path.with_suffix(out_path.suffix + ".tmp")
-    sf.write(str(tmp), audio, sr)
+    # soundfile infers format from the file extension; .wav.tmp confuses it,
+    # so pass format explicitly. PCM_16 matches the rest of the pipeline.
+    sf.write(str(tmp), audio, sr, format="WAV", subtype="PCM_16")
     tmp.replace(out_path)
 
     return int(sr), float(len(audio) / sr)
@@ -118,8 +137,7 @@ def main() -> None:
     voices_dir = home / "voices"
 
     tts = None
-    sys.stdout.write(json.dumps({"ok": True, "ready": True}) + "\n")
-    sys.stdout.flush()
+    emit({"ok": True, "ready": True})
 
     for line in sys.stdin:
         line = line.strip()
@@ -135,28 +153,20 @@ def main() -> None:
             if tts is None:
                 t0 = time.time()
                 tts = load_tts(repo_dir)
-                print(
-                    json.dumps({"ok": True, "loaded_seconds": round(time.time() - t0, 2)}),
-                    flush=True,
-                )
+                emit({"ok": True, "loaded_seconds": round(time.time() - t0, 2)})
 
             t0 = time.time()
             sr, duration = synth(tts, voices_dir, voice, text, out)
-            sys.stdout.write(
-                json.dumps(
-                    {
-                        "ok": True,
-                        "sample_rate": sr,
-                        "duration": duration,
-                        "synth_seconds": round(time.time() - t0, 2),
-                    }
-                )
-                + "\n"
+            emit(
+                {
+                    "ok": True,
+                    "sample_rate": sr,
+                    "duration": duration,
+                    "synth_seconds": round(time.time() - t0, 2),
+                }
             )
-            sys.stdout.flush()
         except Exception as exc:  # noqa: BLE001 — per-request boundary
-            sys.stdout.write(json.dumps({"ok": False, "error": str(exc)}) + "\n")
-            sys.stdout.flush()
+            emit({"ok": False, "error": str(exc)})
 
 
 if __name__ == "__main__":
