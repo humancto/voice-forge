@@ -207,6 +207,16 @@ Output lands at `packs/peter/wav/<event>.wav`. The script is idempotent — phra
 
 For 13 phrases, expect ~2.5 hours of CPU time. Run it overnight. You can `tail -f packs/peter/render.log` to follow progress.
 
+### Faster: persistent-process renderer
+
+`render_pack.py` shells out to fish-speech's CLI scripts per phrase, paying the ~40-second model-load cost each time. For batch rendering (3+ phrases), use `render_pack_persistent.py` instead — it imports `fish_speech` directly, loads the text2semantic model + DAC codec **once**, encodes the reference **once**, and loops over all phrases in the same Python process.
+
+```bash
+~/fish-experiment/venv/bin/python scripts/render_pack_persistent.py packs/peter/
+```
+
+Saves ~8 minutes on a 13-phrase pack (`~40 sec × (N − 1)` phrases avoided). The savings scale linearly with phrase count. **Same `phrases.json` schema, same output layout, same resumability** as `render_pack.py` — they're interchangeable. Recommended for batch renders (3+ phrases); use `render_pack.py` for one-off renders or first-time setup where you'd rather not require the fish-speech venv to be on your PATH.
+
 ---
 
 ## Step 6 — Quality control
