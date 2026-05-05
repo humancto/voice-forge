@@ -3,7 +3,7 @@
   "voice_source": "Jimmy Kimmel — host of Jimmy Kimmel Live",
   "tier": "public-figure",
   "reference_clip": "../../tests/fixtures/kimmel_clean_32k.wav",
-  "reference_prompt_text": "(populate from whisper after a clean ~60s monologue clip is selected)",
+  "reference_prompt_text": "I grabbed one of the 25 pairs of reading glasses off my nightstand and I see the following. When is ABC Fake News Network firing seriously on Funny Jimmy Kimmel, who incompetently presides over one of the lowest rated shows on television? People are angry, it better be soon. Or what? You'll... Thank you for booing. I appreciate it. If incompetently presiding over not just one of, but the lowest rating in history is the reason I should be fired, we should both be out of a job. Because... We're not doing too good either. He also called into Newsmax this afternoon to call me a lowlife and demand I'd be fired again. This guy is so mad at you. I posted a picture of sea shells or something. Isn't there a war dragging on? Imagine if FDR had taken to the airwaves during the Battle of the Bulge to complain about a little orphan Annie comic strip he didn't like.",
   "phrases": {
     "build_success": "Top story tonight: your build passed. America rejoices.",
     "build_failed": "Tonight on Code Watch: your build is broken. Tragic.",

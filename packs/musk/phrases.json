@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "voice_source": "Elon Musk — entrepreneur (Tesla, SpaceX, X)",
+  "tier": "public-figure",
+  "reference_clip": "../../tests/fixtures/musk_clean_32k.wav",
+  "reference_prompt_text": "(populate from whisper after a clean ~60s Musk-only segment is selected from the Kamath interview)",
+  "phrases": {
+    "build_success": "The build succeeded. This is, you know, important. Probably.",
+    "build_failed": "The build failed. We will iterate. That's how engineering works.",
+    "tests_passed": "Tests passed. Hardcore mode is, you know, the optimal mode.",
+    "tests_failed": "Tests failed. We need to figure out, fundamentally, what is the issue here.",
+    "lint_error": "The linter is complaining. Linters, in general, are pedantic.",
+    "type_error": "Type error. We're going to have to, you know, address this. Carefully.",
+    "deploy_success": "We shipped it. To Mars. Well, to production. But, you know, eventually Mars.",
+    "deploy_failed": "Deploy failed. This is, you know, suboptimal.",
+    "commit_success": "You committed. Move fast. But, you know, don't break things. Or do.",
+    "push_rejected": "Push rejected. Git is, in many ways, hostile to the user.",
+    "secret_detected": "You leaked an API key. To, you know, the entire internet. This is bad. Rotate it immediately.",
+    "agent_done": "The AI finished. We're going to have to, you know, audit what it did. Carefully.",
+    "agent_stuck": "The AI got stuck. AGI, you know, is harder than people think."
+  }
+}
