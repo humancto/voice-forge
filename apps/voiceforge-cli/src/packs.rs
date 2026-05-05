@@ -1,10 +1,11 @@
 //! Pre-rendered voice pack lookup at `~/.voiceforge/packs/<name>/`.
 //!
 //! Each installed pack is a directory containing:
-//!   manifest.toml        schema, name, license, attribution
-//!   reference.wav        the source clip used to render (informational)
-//!   wav/<event>.wav      one WAV per event id (build_failed, tests_passed, ...)
-//!   checksums.txt        sha256 manifest
+//!
+//! - `manifest.toml` — schema, name, license, attribution
+//! - `reference.wav` — the source clip used to render (informational)
+//! - `wav/<event>.wav` — one WAV per event id (build_failed, tests_passed, ...)
+//! - `checksums.txt` — sha256 manifest
 //!
 //! `voiceforge play --pack <name> --event <id>` resolves to
 //! `~/.voiceforge/packs/<name>/wav/<event>.wav` and plays it directly —
