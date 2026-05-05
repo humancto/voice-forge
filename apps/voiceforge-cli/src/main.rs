@@ -12,6 +12,7 @@ mod daemon;
 mod doctor;
 mod ingest;
 mod install_cloning;
+mod packs;
 mod paths;
 mod rules;
 mod runner;
@@ -104,6 +105,29 @@ enum Commands {
         #[arg(long, conflicts_with_all = ["force", "check"])]
         uninstall: bool,
     },
+    /// Play a pre-rendered WAV from an installed pack
+    /// (`~/.voiceforge/packs/<pack>/wav/<event>.wav`). Sub-100ms warm
+    /// path — no TTS engine, no model load, just file lookup + playback.
+    ///
+    /// Exit codes:
+    ///   0 — played successfully
+    ///   2 — pack not installed (or invalid pack/event name)
+    ///   3 — event not in pack (caller may fall back via `voiceforge say`)
+    ///   4 — WAV present but undecodable
+    ///   5 — audio backend unavailable
+    Play {
+        /// Pack to look up. Must be installed under
+        /// `~/.voiceforge/packs/<NAME>/`. See `voiceforge pack install`
+        /// (ROADMAP 6.2) when it lands; for now packs install manually.
+        #[arg(long, required_unless_present = "list")]
+        pack: Option<String>,
+        /// Event id; resolves to `<pack>/wav/<event>.wav`.
+        #[arg(long, required_unless_present = "list")]
+        event: Option<String>,
+        /// Print sorted event ids in the pack and exit.
+        #[arg(long, requires = "pack")]
+        list: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -186,9 +210,59 @@ async fn main() -> Result<()> {
         } => {
             clone::run(name, source, force)?;
         }
+        Commands::Play { pack, event, list } => {
+            // The runtime path for ROADMAP 6.5 — sub-100ms WAV playback
+            // from an installed pack. Distinct from `say` so the TTS
+            // engine startup cost never enters the hot path.
+            play_cmd(pack, event, list).await?;
+        }
     }
 
     Ok(())
+}
+
+/// `voiceforge play` dispatch. Returns to main, which exits 0 on success;
+/// errors carry their own exit codes via `PlayError::exit_code()`.
+async fn play_cmd(pack: Option<String>, event: Option<String>, list: bool) -> Result<()> {
+    // clap's required_unless_present + requires gates ensure these are set
+    // when we reach this branch; unwrap is safe.
+    let pack = pack.expect("clap guards --pack required unless --list");
+
+    if list {
+        match packs::list_events(&pack) {
+            Ok(events) => {
+                let mut out = std::io::stdout().lock();
+                for e in events {
+                    writeln!(out, "{e}")?;
+                }
+                Ok(())
+            }
+            Err(e) => {
+                eprintln!("voiceforge play --list: {e}");
+                std::process::exit(e.exit_code());
+            }
+        }
+    } else {
+        let event = event.expect("clap guards --event required unless --list");
+        let wav = match packs::resolve_event_wav(&pack, &event) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("voiceforge play: {e}");
+                std::process::exit(e.exit_code());
+            }
+        };
+        // rodio's sleep_until_end blocks; spawn_blocking keeps the
+        // tokio runtime free for other work (none, in this CLI, but
+        // future daemon mode will care).
+        let result = tokio::task::spawn_blocking(move || packs::play_wav(&wav))
+            .await
+            .map_err(|e| anyhow::anyhow!("play task join error: {e}"))?;
+        if let Err(e) = result {
+            eprintln!("voiceforge play: {e}");
+            std::process::exit(e.exit_code());
+        }
+        Ok(())
+    }
 }
 
 /// Resolve `--voice` flag → user-set active voice → DEFAULT_VOICE.
