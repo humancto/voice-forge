@@ -49,6 +49,38 @@ Bring **any clean ≥60-second audio file** of the voice you want — a Family G
 
 **For arbitrary text you write yourself, use live cloning.** For terminal feedback (a fixed set of events) where you want best-in-class character voice quality, **render a pack once, ship the WAVs**. Anyone can render their own packs locally — see [`docs/PACK_RENDERING.md`](docs/PACK_RENDERING.md).
 
+### Voice packs (community-contributed)
+
+Install with one command. Plays in ~50ms at runtime. Pulls from [voice-forge-packs](https://github.com/humancto/voice-forge-packs).
+
+```bash
+voiceforge pack install peter
+voiceforge play --pack peter --event tests_passed
+```
+
+<table>
+  <tr>
+    <td align="center" width="120">🍔<br/><sub><b>Peter Griffin</b></sub><br/><sub>shipping</sub></td>
+    <td align="center" width="120">👶<br/><sub><b>Stewie Griffin</b></sub><br/><sub>queued</sub></td>
+    <td align="center" width="120"><img src="docs/assets/voices/neil_tyson.jpg" width="80" alt="Neil deGrasse Tyson"/><br/><sub><b>Neil deGrasse Tyson</b></sub><br/><sub>queued</sub></td>
+    <td align="center" width="120"><img src="docs/assets/voices/bob_ross.jpg" width="80" alt="Bob Ross"/><br/><sub><b>Bob Ross</b></sub><br/><sub>queued</sub></td>
+  </tr>
+  <tr>
+    <td align="center" width="120"><img src="docs/assets/voices/herzog.jpg" width="80" alt="Werner Herzog"/><br/><sub><b>Werner Herzog</b></sub><br/><sub>queued</sub></td>
+    <td align="center" width="120"><img src="docs/assets/voices/ramsay.png" width="80" alt="Gordon Ramsay"/><br/><sub><b>Gordon Ramsay</b></sub><br/><sub>queued</sub></td>
+    <td align="center" width="120"><img src="docs/assets/voices/kimmel.jpg" width="80" alt="Jimmy Kimmel"/><br/><sub><b>Jimmy Kimmel</b></sub><br/><sub>rendering</sub></td>
+    <td align="center" width="120"><img src="docs/assets/voices/musk.jpg" width="80" alt="Elon Musk"/><br/><sub><b>Elon Musk</b></sub><br/><sub>queued</sub></td>
+  </tr>
+  <tr>
+    <td align="center" width="120"><img src="docs/assets/voices/trump.jpg" width="80" alt="Donald Trump"/><br/><sub><b>Donald Trump</b></sub><br/><sub>queued</sub></td>
+    <td align="center" width="120"><img src="docs/assets/voices/obama.jpg" width="80" alt="Barack Obama"/><br/><sub><b>Barack Obama</b></sub><br/><sub>queued</sub></td>
+    <td align="center" width="120">🤖<br/><sub><b>Bender</b></sub><br/><sub>queued</sub></td>
+    <td align="center" width="120">🎨<br/><sub><b>your voice</b></sub><br/><sub><a href="docs/PACK_RENDERING.md">render</a></sub></td>
+  </tr>
+</table>
+
+> Photos for real public figures from Wikimedia Commons / Wikipedia (small thumbnails, fair use; see [`docs/assets/voices/ATTRIBUTION.md`](docs/assets/voices/ATTRIBUTION.md)). Cartoon characters use emoji placeholders — we don't ship FOX/Disney cartoon art. Want to contribute a pack? See the [pack content style guide](docs/PACK_CONTENT_GUIDE.md).
+
 ### Plug into any AI coding agent
 
 VoiceForge is designed to be invoked from agent hooks (Claude Code, Cursor, Codex, Continue, Aider, etc.). Any agent that can run a shell command on a tool-use event can speak through VoiceForge:
