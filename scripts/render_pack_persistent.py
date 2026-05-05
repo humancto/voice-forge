@@ -5,9 +5,9 @@ Same end result as `render_pack.py`, but loads the text2semantic model
 + DAC codec **once** at startup and runs all phrases in the same Python
 process. Saves ~40 sec of model-load time per phrase.
 
-For a 13-phrase pack on Mac CPU, the cumulative savings are ~9 minutes
-(~2h00m → ~1h50m). Not transformative, but free, and gets larger the
-more phrases per pack.
+For a 13-phrase pack on Mac CPU, the cumulative savings are ~8 minutes
+(40 sec × (N - 1) avoided model-loads). Not transformative, but free,
+and the savings scale linearly with phrase count.
 
 Run inside the fish-speech venv:
 
@@ -38,6 +38,15 @@ import os
 import sys
 import time
 from pathlib import Path
+
+# Make the fish-speech repo importable BEFORE the fish_speech imports
+# below. Otherwise running with a non-fish python fails at module load
+# instead of at the helpful CLI error path. The default location is
+# documented in the docstring; --fish-speech-dir overrides at runtime
+# (which can only narrow, not change, an already-imported path).
+_DEFAULT_FISH_REPO = Path.home() / "fish-experiment" / "fish-speech"
+if _DEFAULT_FISH_REPO.is_dir() and str(_DEFAULT_FISH_REPO) not in sys.path:
+    sys.path.insert(0, str(_DEFAULT_FISH_REPO))
 
 # These imports require fish-speech installed in the active Python env.
 # Run with the fish-speech venv's python; see the docstring above.
@@ -93,8 +102,6 @@ def render_pack(
     prompt_text = manifest["reference_prompt_text"]
     wav_dir = pack_dir / "wav"
     wav_dir.mkdir(parents=True, exist_ok=True)
-    work_dir = pack_dir / ".work-persistent"
-    work_dir.mkdir(parents=True, exist_ok=True)
 
     # Skip phrases whose output already exists (resumability). Compute
     # this BEFORE loading the model — if everything is already done, no
@@ -160,15 +167,32 @@ def render_pack(
     prompt_tokens = encode_audio(ref_clip, codec, device).cpu()
     logger.info(f"reference encoded in {time.time() - t0:.1f}s")
 
-    torch.manual_seed(seed)
+    if device == "cuda":
+        torch.cuda.synchronize()
 
     # === Per-phrase loop ===
+    #
+    # IMPORTANT: We re-seed at the START of every phrase so that re-rendering
+    # only one event reproduces the same audio bit-for-bit, matching
+    # render_pack.py's per-subprocess fresh-seed behavior. Without this,
+    # phrase N's RNG would depend on phrases 0..N-1 having been rendered in
+    # this same process, breaking the resumability "same output" guarantee.
+    #
+    # ASSUMPTION: num_samples=1. We only consume `action == "sample"` codes
+    # and ignore `"next"` boundary markers. Upstream's main() handles "next"
+    # to flush per-sample WAVs; we don't need that for our 1-sample-per-call
+    # contract. If a future caller needs num_samples > 1 they must restructure
+    # this loop (per-sample concat, then per-sample save).
     failed: list[str] = []
     for event, text in pending:
         out_wav = wav_dir / f"{event}.wav"
         print(f"[render] {event}: {text!r}", flush=True)
         t_phrase = time.time()
         try:
+            torch.manual_seed(seed)
+            if device == "cuda":
+                torch.cuda.manual_seed(seed)
+
             generator = generate_long(
                 model=model,
                 device=device,
@@ -190,6 +214,8 @@ def render_pack(
             for response in generator:
                 if response.action == "sample" and response.codes is not None:
                     codes_chunks.append(response.codes)
+                # response.action == "next" delimits samples; ignored under
+                # the num_samples=1 assumption above.
 
             if not codes_chunks:
                 raise RuntimeError("generator produced no sample codes")
@@ -215,6 +241,12 @@ def render_pack(
         except Exception as e:  # noqa: BLE001
             print(f"[FAIL]   {event}: {e}", file=sys.stderr, flush=True)
             failed.append(event)
+        finally:
+            # Cheap insurance on CUDA between phrases. PyTorch's caching
+            # allocator handles this fine on its own, but explicit
+            # release matches what upstream main() does post-batch.
+            if device == "cuda":
+                torch.cuda.empty_cache()
 
     print(file=sys.stderr)
     print(f"rendered: {len(pending) - len(failed)} / {len(pending)}", flush=True)

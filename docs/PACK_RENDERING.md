@@ -215,7 +215,7 @@ For 13 phrases, expect ~2.5 hours of CPU time. Run it overnight. You can `tail -
 ~/fish-experiment/venv/bin/python scripts/render_pack_persistent.py packs/peter/
 ```
 
-Saves ~9 minutes on a 13-phrase pack (~2h00m → ~1h50m on Mac CPU). The savings scale with phrase count. **Same `phrases.json` schema, same output layout, same resumability** as `render_pack.py` — they're interchangeable. Use whichever is easier to reach for; persistent is the default for serious renders. Both are documented as first-class paths.
+Saves ~8 minutes on a 13-phrase pack (`~40 sec × (N − 1)` phrases avoided). The savings scale linearly with phrase count. **Same `phrases.json` schema, same output layout, same resumability** as `render_pack.py` — they're interchangeable. Recommended for batch renders (3+ phrases); use `render_pack.py` for one-off renders or first-time setup where you'd rather not require the fish-speech venv to be on your PATH.
 
 ---
 
