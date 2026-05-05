@@ -118,7 +118,7 @@ enum Commands {
     Play {
         /// Pack to look up. Must be installed under
         /// `~/.voiceforge/packs/<NAME>/`. See `voiceforge pack install`
-        /// (ROADMAP 6.2) when it lands; for now packs install manually.
+        /// to fetch + install one.
         #[arg(long, required_unless_present = "list")]
         pack: Option<String>,
         /// Event id; resolves to `<pack>/wav/<event>.wav`.
@@ -128,6 +128,45 @@ enum Commands {
         #[arg(long, requires = "pack")]
         list: bool,
     },
+    /// Manage installed voice packs. Pulls from a static pack index
+    /// (default voice-forge-packs repo); override via
+    /// `VOICEFORGE_PACK_INDEX_URL`.
+    ///
+    /// Exit codes (per subaction): 0 success, 2 unknown pack, 3 fetch
+    /// failed, 4 sha256 mismatch, 5 extract or disk failure, 6 already
+    /// installed (without --force) or concurrent install in progress.
+    Pack {
+        #[command(subcommand)]
+        action: PackAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum PackAction {
+    /// List packs available in the index, with installed status.
+    List {
+        /// Output as JSON for tooling.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Download + install a pack.
+    Install {
+        /// Pack name (must appear in the index).
+        name: String,
+        /// Replace any existing install.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Remove an installed pack.
+    Remove {
+        name: String,
+        /// Skip the confirmation prompt (required when stdin is not a TTY).
+        #[arg(long)]
+        force: bool,
+    },
+    /// Show pack metadata (manifest.toml). Reads from disk if installed,
+    /// else fetches the manifest URL from the index.
+    Info { name: String },
 }
 
 #[derive(Subcommand)]
@@ -216,8 +255,162 @@ async fn main() -> Result<()> {
             // engine startup cost never enters the hot path.
             play_cmd(pack, event, list).await?;
         }
+        Commands::Pack { action } => {
+            // ROADMAP 6.2 — pack distribution surface. Each subaction
+            // handles its own exit codes via `process::exit` so the
+            // documented contract holds even when bubbling errors.
+            pack_cmd(action).await?;
+        }
     }
 
+    Ok(())
+}
+
+/// `voiceforge pack` dispatch. Each subaction calls `process::exit` on
+/// failure with the InstallError's exit_code, so the structured contract
+/// holds for callers (e.g. `voiceforge hook` shelling out per event).
+async fn pack_cmd(action: PackAction) -> Result<()> {
+    use packs::{InstallError, PackEntry};
+
+    fn die_install(err: InstallError) -> ! {
+        eprintln!("voiceforge pack: {err}");
+        std::process::exit(err.exit_code());
+    }
+
+    match action {
+        PackAction::List { json } => {
+            // Fetch index; merge with installed-list to compute status.
+            let index = packs::fetch_index()
+                .await
+                .unwrap_or_else(|e| die_install(e));
+            let installed: std::collections::BTreeSet<String> = packs::list_installed()
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+
+            if json {
+                #[derive(serde::Serialize)]
+                struct Row<'a> {
+                    name: &'a str,
+                    installed: bool,
+                    entry: &'a PackEntry,
+                }
+                let rows: Vec<Row> = index
+                    .packs
+                    .iter()
+                    .map(|(name, entry)| Row {
+                        name,
+                        installed: installed.contains(name),
+                        entry,
+                    })
+                    .collect();
+                let mut out = std::io::stdout().lock();
+                serde_json::to_writer_pretty(&mut out, &rows)?;
+                writeln!(out)?;
+            } else {
+                let mut out = std::io::stdout().lock();
+                writeln!(
+                    out,
+                    "NAME                 STATUS    VERSION    TIER           DISPLAY NAME"
+                )?;
+                for (name, entry) in &index.packs {
+                    let status = if installed.contains(name) {
+                        "installed"
+                    } else {
+                        "available"
+                    };
+                    let version = &entry.version;
+                    let tier = &entry.tier;
+                    let display = &entry.display_name;
+                    writeln!(
+                        out,
+                        "{name:<20} {status:<9} {version:<10} {tier:<14} {display}"
+                    )?;
+                }
+            }
+        }
+        PackAction::Install { name, force } => {
+            // Run the full install flow. Errors map to documented exit codes.
+            let entry = packs::install_pack(&name, force)
+                .await
+                .unwrap_or_else(|e| die_install(e));
+            println!(
+                "installed {} v{} ({} phrases). Try: voiceforge play --pack {} --event tests_passed",
+                name, entry.version, entry.phrases, name
+            );
+        }
+        PackAction::Remove { name, force } => {
+            // TTY-detect for confirm prompt; --force required in non-TTY.
+            // Mirrors `voiceforge voices remove`.
+            let stdin_is_tty = std::io::stdin().is_terminal();
+            if !force {
+                if !stdin_is_tty {
+                    eprintln!(
+                        "voiceforge pack remove {name:?}: stdin is not a TTY and --force was not passed."
+                    );
+                    std::process::exit(2);
+                }
+                eprint!("remove pack {name:?}? [y/N] ");
+                let _ = std::io::stderr().flush();
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line)?;
+                if !line.trim().eq_ignore_ascii_case("y") {
+                    println!("aborted.");
+                    return Ok(());
+                }
+            }
+            packs::remove_pack(&name).unwrap_or_else(|e| die_install(e));
+            println!("removed pack {name:?}");
+        }
+        PackAction::Info { name } => {
+            // Try installed-on-disk first; fall through to the index
+            // entry if not installed (best-effort, no separate manifest
+            // fetch in this PR — index has the same display info).
+            match packs::pack_info_local(&name) {
+                Ok(m) => {
+                    println!("name:               {}", m.name);
+                    println!("display_name:       {}", m.display_name);
+                    println!("description:        {}", m.description);
+                    println!("voice_source:       {}", m.voice_source);
+                    println!("source_clip_url:    {}", m.source_clip_url);
+                    println!("source_clip_episode: {}", m.source_clip_episode);
+                    println!("rendered_with:      {}", m.rendered_with);
+                    println!("rendered_at:        {}", m.rendered_at);
+                    println!("sample_rate:        {}", m.sample_rate);
+                    println!("phrases:            {}", m.phrases);
+                    println!("license:            {}", m.license);
+                    println!("(installed locally; reading manifest.toml from disk)");
+                }
+                Err(InstallError::UnknownPack(_)) => {
+                    // Not installed — fetch the index for whatever info we have.
+                    let index = packs::fetch_index()
+                        .await
+                        .unwrap_or_else(|e| die_install(e));
+                    let entry = index
+                        .packs
+                        .get(&name)
+                        .unwrap_or_else(|| die_install(InstallError::UnknownPack(name.clone())));
+                    println!("name:               {}", name);
+                    println!("display_name:       {}", entry.display_name);
+                    println!("description:        {}", entry.description);
+                    println!("voice_source:       {}", entry.voice_source);
+                    println!("source_clip_url:    {}", entry.source_clip_url);
+                    println!("version:            {}", entry.version);
+                    println!("tier:               {}", entry.tier);
+                    println!("phrases:            {}", entry.phrases);
+                    println!("sample_rate:        {}", entry.sample_rate);
+                    println!("license:            {}", entry.license);
+                    println!("tarball_url:        {}", entry.tarball_url);
+                    println!("tarball_sha256:     {}", entry.tarball_sha256);
+                    println!(
+                        "(not installed; install with: voiceforge pack install {})",
+                        name
+                    );
+                }
+                Err(e) => die_install(e),
+            }
+        }
+    }
     Ok(())
 }
 
