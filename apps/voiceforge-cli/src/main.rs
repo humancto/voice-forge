@@ -20,7 +20,7 @@ mod tts;
 mod voices;
 
 #[derive(Parser)]
-#[command(name = "voiceforge")]
+#[command(name = "voiceforge", version)]
 #[command(about = "Local terminal voice runtime", long_about = None)]
 struct Cli {
     #[command(subcommand)]
