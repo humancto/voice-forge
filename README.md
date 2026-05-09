@@ -193,9 +193,14 @@ bash install.sh
 Override defaults:
 
 ```bash
-VOICEFORGE_REF=v0.2.0 \
-VOICEFORGE_INSTALL_DIR=$HOME/.local/bin \
-bash install.sh
+# Pin a specific prebuilt release (default: latest):
+VOICEFORGE_VERSION=v0.2.0 bash install.sh
+
+# Force from-source build (e.g. for an unsupported platform):
+VOICEFORGE_FORCE_SOURCE=1 VOICEFORGE_REF=main bash install.sh
+
+# Override the install dir:
+VOICEFORGE_INSTALL_DIR=$HOME/.local/bin bash install.sh
 ```
 
 ### Build from source manually
