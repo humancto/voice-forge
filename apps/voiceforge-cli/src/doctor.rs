@@ -64,6 +64,7 @@ pub async fn run_doctor() -> DoctorReport {
     checks.push(check_config_toml());
     checks.push(check_ffmpeg().await);
     checks.push(check_cloning());
+    checks.push(check_daemon_socket().await);
 
     DoctorReport {
         schema_version: SCHEMA_VERSION,
@@ -282,6 +283,34 @@ fn check_config_toml() -> Check {
     }
 }
 
+/// Probes `~/.voiceforge/voiceforge.sock` to report daemon liveness.
+/// Reuses `daemon_server::probe_socket` so the timeout matches what
+/// the daemon itself uses for stale-detect — otherwise doctor would
+/// report `not running` under transient load and confuse users.
+async fn check_daemon_socket() -> Check {
+    let path = match crate::daemon_server::DaemonConfig::default_path() {
+        Ok(p) => p,
+        Err(e) => return warn("daemon", format!("could not resolve socket path: {e:#}")),
+    };
+    if !path.exists() {
+        return ok("daemon", format!("not running ({} absent)", path.display()));
+    }
+    match crate::daemon_server::probe_socket(&path).await {
+        Ok(true) => ok("daemon", format!("running at {}", path.display())),
+        Ok(false) => warn(
+            "daemon",
+            format!(
+                "stale socket file at {} (no listener); will be cleaned up on next `voiceforge daemon`",
+                path.display()
+            ),
+        ),
+        Err(e) => warn(
+            "daemon",
+            format!("probe failed at {}: {e:#}", path.display()),
+        ),
+    }
+}
+
 fn check_cloning() -> Check {
     match install_cloning::read_install_state() {
         Ok(state) => ok(
@@ -443,6 +472,7 @@ mod tests {
             "presets",
             "config.toml",
             "ffmpeg",
+            "daemon",
         ] {
             assert!(
                 names.contains(expected),
@@ -564,5 +594,38 @@ mod tests {
 
         assert_eq!(check.status, CheckStatus::Warn);
         assert!(check.detail.contains("not reachable") || check.detail.contains("connect"));
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn daemon_check_reports_not_running_when_socket_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("VOICEFORGE_HOME", tmp.path());
+        let check = check_daemon_socket().await;
+        std::env::remove_var("VOICEFORGE_HOME");
+        assert_eq!(check.status, CheckStatus::Ok);
+        assert!(
+            check.detail.contains("not running"),
+            "unexpected detail: {}",
+            check.detail
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn daemon_check_reports_stale_when_file_is_not_a_socket() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("VOICEFORGE_HOME", tmp.path());
+        // Create a regular file at the socket path. probe_socket connects,
+        // gets ECONNREFUSED / EOPNOTSUPP, returns Ok(false) → stale.
+        std::fs::write(tmp.path().join("voiceforge.sock"), b"not a socket").unwrap();
+        let check = check_daemon_socket().await;
+        std::env::remove_var("VOICEFORGE_HOME");
+        assert_eq!(check.status, CheckStatus::Warn);
+        assert!(
+            check.detail.contains("stale"),
+            "unexpected detail: {}",
+            check.detail
+        );
     }
 }
