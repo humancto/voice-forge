@@ -179,7 +179,12 @@ esac
 # runs without the user having to find an obscure xattr command.
 install_binary() {
   local src="$1"
-  [[ -x "$src" ]] || die "expected executable not found: $src"
+  # In real mode, the binary must exist and be executable. In dry-run,
+  # callers haven't actually built / extracted anything, so skip the
+  # check (and the cp/chmod/mv all no-op via `run`).
+  if [[ "$DRY_RUN" != "1" ]]; then
+    [[ -x "$src" ]] || die "expected executable not found: $src"
+  fi
   local tmp="${INSTALL_PATH}.partial.$$"
   run cp "$src" "$tmp"
   run chmod 0755 "$tmp"
@@ -203,14 +208,22 @@ resolve_version() {
     printf '%s' "$VERSION"
     return
   fi
-  # Scrape the redirect target of /releases/latest.
+  # Scrape the redirect target of /releases/latest. Curl returns 22 on
+  # 404 (no releases yet); we MUST capture that without set -e tripping.
+  # Pattern: explicit `if !` rather than $() capture of a failing
+  # pipeline, since `set -Eeuo pipefail` + bare assignment would abort
+  # the whole script before the `return 1` fallback could fire.
   local url="${RELEASES_URL}/latest"
+  local raw
+  if ! raw="$(curl -fsI "$url" 2>/dev/null)"; then
+    return 1
+  fi
   local resolved
-  resolved="$(curl -fsI "$url" 2>/dev/null \
+  resolved="$(printf '%s\n' "$raw" \
     | awk -F'/' 'tolower($1) == "location:" {gsub(/\r/, "", $NF); print $NF}' \
     | tail -1)"
   if [[ -z "$resolved" ]]; then
-    return 1   # caller falls through to from-source
+    return 1
   fi
   printf '%s' "$resolved"
 }
