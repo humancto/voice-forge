@@ -42,7 +42,7 @@ Each unchecked item is one PR with tests. Expert agent (auto-detected from stack
 
 ## Phase 3 — Plug into the dev workflow
 
-- [ ] **3.1 `voiceforge shell-init` for zsh + bash: `preexec`/`precmd` hooks fire daemon events for commands over a configurable threshold.**
+- [x] **3.1 `voiceforge shell-init` for zsh + bash: `preexec`/`precmd` hooks fire daemon events for commands over a configurable threshold.**
 - [ ] **3.2 `voiceforge install git-hooks`: `post-commit`, `post-merge`, `post-rewrite`, `pre-push` send daemon events. Idempotent, with uninstaller.**
 - [ ] **3.3 `voiceforge hook`: reads JSON Lines from stdin, forwards to daemon. Lets Claude Code / Codex / Cursor pipe their hook events in. Distinct from `voiceforge ingest` (audio transcoder) — different surface, different concept.**
 - [ ] **3.4 `voiceforge watch <path>`: speaks on filesystem changes via `notify`.**
