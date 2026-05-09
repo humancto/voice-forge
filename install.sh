@@ -218,10 +218,19 @@ resolve_version() {
   if ! raw="$(curl -fsI "$url" 2>/dev/null)"; then
     return 1
   fi
+  # Parse the redirect target. Important: do NOT use `awk -F'/'` here.
+  # An earlier version did, and the per-`/` field split made `$1` equal
+  # to `"location: https:"` (the URL itself contains `/`), so
+  # `tolower($1) == "location:"` never matched and 100% of installs
+  # silently fell through to the slow from-source path. The fix is to
+  # match the header line as a whole and then peel off the tag suffix
+  # via `sed`. Tested against the actual GitHub redirect format:
+  #   location: https://github.com/<owner>/<repo>/releases/tag/v<X.Y.Z>
   local resolved
   resolved="$(printf '%s\n' "$raw" \
-    | awk -F'/' 'tolower($1) == "location:" {gsub(/\r/, "", $NF); print $NF}' \
-    | tail -1)"
+    | grep -i '^location:' \
+    | sed -E 's|.*/tag/||' \
+    | tr -d '\r\n')"
   if [[ -z "$resolved" ]]; then
     return 1
   fi
