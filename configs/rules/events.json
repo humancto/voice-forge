@@ -15,6 +15,24 @@
       "Clean build. Beautiful."
     ]
   },
+  "command_failed": {
+    "voice": "angry_duck",
+    "lines": [
+      "Your command failed.",
+      "That did not work.",
+      "Something is broken.",
+      "Check the output."
+    ]
+  },
+  "command_succeeded": {
+    "voice": "hype_narrator",
+    "lines": [
+      "Done.",
+      "Finished.",
+      "Command completed.",
+      "That worked."
+    ]
+  },
   "git_commit": {
     "voice": "sarcastic_goblin",
     "lines": [
