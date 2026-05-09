@@ -10,12 +10,10 @@
 use anyhow::Result;
 use std::path::Path;
 
-#[allow(dead_code)] // wired up by daemon_server in the next commit
 pub trait AudioSink: Send + Sync {
     fn play(&self, wav_path: &Path) -> Result<()>;
 }
 
-#[allow(dead_code)] // wired up by daemon_server in the next commit
 #[derive(Default)]
 pub struct RodioSink;
 

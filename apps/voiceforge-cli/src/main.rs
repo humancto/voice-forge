@@ -10,6 +10,7 @@ mod bootstrap;
 mod clone;
 mod config;
 mod daemon;
+mod daemon_server;
 mod doctor;
 mod ingest;
 mod install_cloning;
