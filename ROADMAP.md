@@ -27,7 +27,7 @@ Each unchecked item is one PR with tests. Expert agent (auto-detected from stack
 - [x] **1.6 `install.sh` at repo root + served from `voiceforge.sh`: detects OS+arch, fetches binary from latest release, drops in `/usr/local/bin` or `~/.local/bin`, runs `voiceforge doctor`.** _(Builds from source until 1.5 ships releases; URL contract stays the same when binary fetch lands. `voiceforge doctor` smoke deferred to 1.7.)_
 - [x] **1.7 `voiceforge doctor`: OS, audio backend, TTS engine, cache size, server reachability. JSON mode behind `--json`.**
 - [x] **1.8 Real Unix-socket daemon at `~/.voiceforge/voiceforge.sock` accepting `{event, message, voice}`. Replaces the heartbeat placeholder.**
-- [ ] **1.9 `voiceforge send <event> [--message ...] [--voice ...]` client for the daemon.**
+- [x] **1.9 `voiceforge send <event> [--message ...] [--voice ...]` client for the daemon.**
 
 ## Phase 2 — Clone from anything
 
