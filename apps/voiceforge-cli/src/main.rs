@@ -51,6 +51,29 @@ enum Commands {
         command: Vec<String>,
     },
     Daemon,
+    /// Print or install zsh / bash hook scripts that fire
+    /// command_succeeded / command_failed daemon events for commands
+    /// over a configurable threshold (default 3 s, env override
+    /// VOICEFORGE_SHELL_THRESHOLD_MS). Companion to `voiceforge daemon`
+    /// + `voiceforge send`.
+    ShellInit {
+        /// Shell to render. `zsh` or `bash`. Default behavior prints
+        /// the hook to stdout for `eval "$(voiceforge shell-init zsh)"`.
+        #[arg(value_parser = clap::builder::PossibleValuesParser::new(["zsh", "bash"]))]
+        shell: Option<String>,
+        /// Append the hook block to ~/.zshrc or ~/.bashrc (idempotent).
+        #[arg(long, conflicts_with_all = ["uninstall", "status"])]
+        install: bool,
+        /// Strip the hook block from ~/.zshrc or ~/.bashrc.
+        #[arg(long, conflicts_with_all = ["install", "status"])]
+        uninstall: bool,
+        /// Report which shells have the hook installed.
+        #[arg(long, conflicts_with_all = ["install", "uninstall"])]
+        status: bool,
+        /// Override the stale-invocation guard during install.
+        #[arg(long)]
+        force: bool,
+    },
     /// Drop one event onto the daemon's Unix socket and print its
     /// reply. Companion to `voiceforge daemon`. Either `event` or
     /// `--text` must be supplied. Exit codes: 0 on `ok:true`, 1 on
@@ -241,6 +264,16 @@ async fn main() -> Result<()> {
             json,
         } => {
             let exit_code = run_send(event, text, voice, message, json).await;
+            std::process::exit(exit_code);
+        }
+        Commands::ShellInit {
+            shell,
+            install,
+            uninstall,
+            status,
+            force,
+        } => {
+            let exit_code = run_shell_init(shell, install, uninstall, status, force);
             std::process::exit(exit_code);
         }
         Commands::Voices { action } => match action {
@@ -589,6 +622,112 @@ async fn run_send(
             eprintln!("voiceforge send: {msg}");
             4
         }
+    }
+}
+
+/// `voiceforge shell-init` dispatcher. Returns the process exit code.
+fn run_shell_init(
+    shell: Option<String>,
+    install: bool,
+    uninstall: bool,
+    status: bool,
+    force: bool,
+) -> i32 {
+    use shell_init::{BinaryHint, Shell};
+    use std::str::FromStr;
+
+    if status {
+        let home = match std::env::var_os("HOME") {
+            Some(h) => std::path::PathBuf::from(h),
+            None => {
+                eprintln!("voiceforge shell-init: $HOME is unset");
+                return 2;
+            }
+        };
+        for s in shell_init::status(&home) {
+            let mark = if s.installed {
+                "installed"
+            } else {
+                "missing  "
+            };
+            println!("{} {} {}", mark, s.shell.name(), s.rc_path.display());
+        }
+        return 0;
+    }
+
+    let shell_name = match shell {
+        Some(s) => s,
+        None => {
+            eprintln!(
+                "voiceforge shell-init: must supply <shell> (zsh or bash). See `voiceforge shell-init --help`."
+            );
+            return 3;
+        }
+    };
+    let shell = match Shell::from_str(&shell_name) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("voiceforge shell-init: {e}");
+            return 3;
+        }
+    };
+
+    let hint = BinaryHint::DiscoverViaPath;
+
+    if install {
+        let home = match std::env::var_os("HOME") {
+            Some(h) => std::path::PathBuf::from(h),
+            None => {
+                eprintln!("voiceforge shell-init: $HOME is unset");
+                return 2;
+            }
+        };
+        let rc_path = home.join(shell.rc_filename());
+        match shell_init::install(shell, &rc_path, &hint, force) {
+            Ok(report) => {
+                let verb = match report.action {
+                    shell_init::InstallAction::Created => "appended hook to",
+                    shell_init::InstallAction::Replaced => "replaced hook in",
+                };
+                println!("voiceforge: {} {}", verb, report.rc_path.display());
+                println!(
+                    "hint: open a new shell or `source {}`",
+                    report.rc_path.display()
+                );
+                0
+            }
+            Err(e) => {
+                eprintln!("voiceforge shell-init: {e:#}");
+                1
+            }
+        }
+    } else if uninstall {
+        let home = match std::env::var_os("HOME") {
+            Some(h) => std::path::PathBuf::from(h),
+            None => {
+                eprintln!("voiceforge shell-init: $HOME is unset");
+                return 2;
+            }
+        };
+        let rc_path = home.join(shell.rc_filename());
+        match shell_init::uninstall(&rc_path) {
+            Ok(report) => {
+                let verb = match report.action {
+                    shell_init::UninstallAction::Removed => "removed hook from",
+                    shell_init::UninstallAction::NotPresent => "no hook block in",
+                };
+                println!("voiceforge: {} {}", verb, report.rc_path.display());
+                0
+            }
+            Err(e) => {
+                eprintln!("voiceforge shell-init: {e:#}");
+                1
+            }
+        }
+    } else {
+        // Default: print hook to stdout for `eval "$(voiceforge shell-init zsh)"`.
+        print!("{}", shell_init::render_hook(shell, &hint));
+        0
     }
 }
 

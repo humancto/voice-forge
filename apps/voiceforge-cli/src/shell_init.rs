@@ -6,10 +6,8 @@
 //! See `.planning/voiceforge-shell-init.plan.md` for the design audit
 //! (rust-expert plan v2 APPROVE + 8 implementation notes).
 
-#![allow(dead_code)] // install/uninstall/status + main.rs wiring land in commit 2
-
-use anyhow::{anyhow, Result};
-use std::path::PathBuf;
+use anyhow::{anyhow, bail, Context, Result};
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 /// Sentinels delimit the voiceforge-managed block in the rc file.
@@ -58,18 +56,19 @@ impl FromStr for Shell {
 /// `voiceforge upgrade` transparently.
 ///
 /// `Pinned(path)` embeds the absolute path verbatim. Used by tests
-/// (deterministic output) and by the future `--reinstall` flag for
-/// users who want a stable pin.
+/// (deterministic output) and by the future `--reinstall` flag.
 #[derive(Debug, Clone)]
 pub enum BinaryHint {
     DiscoverViaPath,
+    /// Reserved for the future `--reinstall` flag (3.1.2). Used today
+    /// by tests to verify shell-escape and embedding behavior.
+    #[allow(dead_code)]
     Pinned(PathBuf),
 }
 
 /// Single-quote shell-escape: wrap in `'...'`, replace inner `'`
 /// with `'\''`. Survives any path content including spaces, `$`,
-/// backticks, and `'` itself. We don't pull in a crate for this —
-/// it's nine lines.
+/// backticks, and `'` itself.
 fn shell_quote(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('\'');
@@ -84,24 +83,13 @@ fn shell_quote(s: &str) -> String {
     out
 }
 
-/// Render the hook block for the given shell. The output includes the
-/// sentinels — callers either eval it directly (`voiceforge shell-init zsh`)
-/// or write it into an rc file (via `install`).
 pub fn render_hook(shell: Shell, hint: &BinaryHint) -> String {
-    // The "voiceforge invocation" line differs only by whether we
-    // shim through `command -v` or call a pinned absolute path. The
-    // surrounding hook body is otherwise identical per shell.
     let invocation = match hint {
         BinaryHint::DiscoverViaPath => {
-            // `command -v` is a builtin (no fork). Cheap to call every
-            // prompt; do NOT try to cache, the upgrade path depends on
-            // re-resolving each time.
             "command -v voiceforge >/dev/null 2>&1 && voiceforge".to_string()
         }
         BinaryHint::Pinned(path) => {
             let q = shell_quote(&path.display().to_string());
-            // Test for existence first so a stale pin (binary moved/
-            // removed) doesn't spam errors.
             format!("[ -x {q} ] && {q}")
         }
     };
@@ -223,6 +211,220 @@ trap '__voiceforge_preexec' DEBUG\n\
     )
 }
 
+// -- install / uninstall / status -------------------------------------
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum InstallAction {
+    Created,
+    Replaced,
+}
+
+#[derive(Debug)]
+pub struct InstallReport {
+    pub rc_path: PathBuf,
+    pub action: InstallAction,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum UninstallAction {
+    Removed,
+    NotPresent,
+}
+
+#[derive(Debug)]
+pub struct UninstallReport {
+    pub rc_path: PathBuf,
+    pub action: UninstallAction,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct ShellStatus {
+    pub shell: Shell,
+    pub rc_path: PathBuf,
+    pub installed: bool,
+}
+
+/// Look for any `voiceforge shell-init` invocation OUTSIDE the
+/// sentinel-delimited block. A user with a stale invocation in their
+/// rc would otherwise end up with two hook installations — silent
+/// double-firing. We refuse without `--force` and print the offending
+/// line so they can audit.
+fn find_stale_invocation(content: &str) -> Option<(usize, String)> {
+    let mut in_sentinel = false;
+    for (lineno, line) in content.lines().enumerate() {
+        if line.trim() == SENTINEL_OPEN {
+            in_sentinel = true;
+            continue;
+        }
+        if line.trim() == SENTINEL_CLOSE {
+            in_sentinel = false;
+            continue;
+        }
+        if in_sentinel {
+            continue;
+        }
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        if trimmed.contains("voiceforge") && trimmed.contains("shell-init") {
+            return Some((lineno + 1, line.to_string()));
+        }
+    }
+    None
+}
+
+fn replace_or_append_block(content: &str, block: &str) -> (String, InstallAction) {
+    let lines: Vec<&str> = content.lines().collect();
+    let open_idx = lines.iter().position(|l| l.trim() == SENTINEL_OPEN);
+    let close_idx = lines.iter().position(|l| l.trim() == SENTINEL_CLOSE);
+
+    match (open_idx, close_idx) {
+        (Some(open), Some(close)) if close >= open => {
+            let mut out = String::new();
+            for (i, line) in lines.iter().enumerate() {
+                if i < open || i > close {
+                    out.push_str(line);
+                    out.push('\n');
+                }
+                if i == open {
+                    out.push_str(block);
+                    if !block.ends_with('\n') {
+                        out.push('\n');
+                    }
+                }
+            }
+            if !content.ends_with('\n') && out.ends_with('\n') {
+                out.pop();
+            }
+            (out, InstallAction::Replaced)
+        }
+        _ => {
+            let mut out = content.to_string();
+            if !out.is_empty() && !out.ends_with("\n\n") {
+                if !out.ends_with('\n') {
+                    out.push('\n');
+                }
+                out.push('\n');
+            }
+            out.push_str(block);
+            if !block.ends_with('\n') {
+                out.push('\n');
+            }
+            (out, InstallAction::Created)
+        }
+    }
+}
+
+fn strip_block(content: &str) -> (String, bool) {
+    let lines: Vec<&str> = content.lines().collect();
+    let open_idx = lines.iter().position(|l| l.trim() == SENTINEL_OPEN);
+    let close_idx = lines.iter().position(|l| l.trim() == SENTINEL_CLOSE);
+
+    match (open_idx, close_idx) {
+        (Some(open), Some(close)) if close >= open => {
+            let mut out: Vec<&str> = Vec::with_capacity(lines.len());
+            let drop_trailing_blank = lines.get(close + 1).is_some_and(|l| l.trim().is_empty());
+            for (i, line) in lines.iter().enumerate() {
+                if i >= open && i <= close {
+                    continue;
+                }
+                if drop_trailing_blank && i == close + 1 {
+                    continue;
+                }
+                out.push(line);
+            }
+            let mut joined = out.join("\n");
+            if content.ends_with('\n') {
+                joined.push('\n');
+            }
+            (joined, true)
+        }
+        _ => (content.to_string(), false),
+    }
+}
+
+pub fn install(
+    shell: Shell,
+    rc_path: &Path,
+    hint: &BinaryHint,
+    force: bool,
+) -> Result<InstallReport> {
+    let content = std::fs::read_to_string(rc_path).unwrap_or_default();
+
+    if let Some((lineno, line)) = find_stale_invocation(&content) {
+        if !force {
+            bail!(
+                "{}:{lineno}: found a stale `voiceforge shell-init` invocation outside the managed block:\n  {}\n\nRe-running install would result in the hook firing twice. Either:\n  1. Remove the stale line by hand, or\n  2. Re-run with --force to install anyway (the stale line will keep firing)",
+                rc_path.display(),
+                line.trim()
+            );
+        }
+    }
+
+    let block = render_hook(shell, hint);
+    let (new_content, action) = replace_or_append_block(&content, &block);
+
+    if let Some(parent) = rc_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating parent dir {}", parent.display()))?;
+        }
+    }
+    std::fs::write(rc_path, new_content)
+        .with_context(|| format!("writing {}", rc_path.display()))?;
+
+    Ok(InstallReport {
+        rc_path: rc_path.to_path_buf(),
+        action,
+    })
+}
+
+pub fn uninstall(rc_path: &Path) -> Result<UninstallReport> {
+    let content = match std::fs::read_to_string(rc_path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(UninstallReport {
+                rc_path: rc_path.to_path_buf(),
+                action: UninstallAction::NotPresent,
+            });
+        }
+        Err(e) => return Err(anyhow!("reading {}: {e}", rc_path.display())),
+    };
+
+    let (new_content, was_present) = strip_block(&content);
+    if was_present {
+        std::fs::write(rc_path, new_content)
+            .with_context(|| format!("writing {}", rc_path.display()))?;
+        Ok(UninstallReport {
+            rc_path: rc_path.to_path_buf(),
+            action: UninstallAction::Removed,
+        })
+    } else {
+        Ok(UninstallReport {
+            rc_path: rc_path.to_path_buf(),
+            action: UninstallAction::NotPresent,
+        })
+    }
+}
+
+pub fn status(home: &Path) -> Vec<ShellStatus> {
+    [Shell::Zsh, Shell::Bash]
+        .iter()
+        .map(|&shell| {
+            let rc_path = home.join(shell.rc_filename());
+            let installed = std::fs::read_to_string(&rc_path)
+                .map(|c| c.contains(SENTINEL_OPEN) && c.contains(SENTINEL_CLOSE))
+                .unwrap_or(false);
+            ShellStatus {
+                shell,
+                rc_path,
+                installed,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,7 +473,6 @@ mod tests {
     fn render_hook_shell_escapes_binary_path_with_spaces() {
         let pinned = BinaryHint::Pinned(PathBuf::from("/path with spaces/voiceforge"));
         let h = render_hook(Shell::Bash, &pinned);
-        // Single-quoted token must contain the literal path including spaces.
         assert!(h.contains("'/path with spaces/voiceforge'"));
     }
 
@@ -279,14 +480,11 @@ mod tests {
     fn render_hook_shell_escapes_inner_single_quote() {
         let pinned = BinaryHint::Pinned(PathBuf::from("/odd'place/vf"));
         let h = render_hook(Shell::Bash, &pinned);
-        // The inner ' must be escaped as '\'' in single-quoted shell context.
         assert!(h.contains(r"'/odd'\''place/vf'"));
     }
 
     #[test]
     fn vf_status_capture_is_first_statement_in_zsh_precmd() {
-        // Assert the first body line of __voiceforge_precmd captures
-        // $? before any other expansion can clobber it.
         let h = render_hook(Shell::Zsh, &discover());
         let needle = "__voiceforge_precmd() {\nlocal __vf_status=$?";
         assert!(
@@ -300,5 +498,128 @@ mod tests {
         let h = render_hook(Shell::Bash, &discover());
         let needle = "__voiceforge_precmd() {\nlocal __vf_status=$?";
         assert!(h.contains(needle));
+    }
+
+    // -- install / uninstall / status tests ----------------------------
+
+    fn count_substring(haystack: &str, needle: &str) -> usize {
+        haystack.matches(needle).count()
+    }
+
+    #[test]
+    fn install_appends_block_idempotently() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rc = tmp.path().join(".zshrc");
+        std::fs::write(&rc, "# user's existing rc\nalias ll='ls -la'\n").unwrap();
+
+        let r1 = install(Shell::Zsh, &rc, &discover(), false).unwrap();
+        assert_eq!(r1.action, InstallAction::Created);
+        let r2 = install(Shell::Zsh, &rc, &discover(), false).unwrap();
+        assert_eq!(r2.action, InstallAction::Replaced);
+
+        let final_content = std::fs::read_to_string(&rc).unwrap();
+        assert_eq!(count_substring(&final_content, SENTINEL_OPEN), 1);
+        assert_eq!(count_substring(&final_content, SENTINEL_CLOSE), 1);
+    }
+
+    #[test]
+    fn install_preserves_surrounding_rc_content() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rc = tmp.path().join(".zshrc");
+        let original = "# top of rc\nalias gs='git status'\nexport FOO=bar\n";
+        std::fs::write(&rc, original).unwrap();
+
+        install(Shell::Zsh, &rc, &discover(), false).unwrap();
+        let after = std::fs::read_to_string(&rc).unwrap();
+
+        assert!(after.contains("alias gs='git status'"));
+        assert!(after.contains("export FOO=bar"));
+        assert!(after.contains(SENTINEL_OPEN));
+    }
+
+    #[test]
+    fn install_refuses_when_stale_invocation_present_and_no_force() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rc = tmp.path().join(".zshrc");
+        std::fs::write(
+            &rc,
+            "alias ll='ls -la'\neval \"$(voiceforge shell-init zsh)\"\n",
+        )
+        .unwrap();
+
+        let err = install(Shell::Zsh, &rc, &discover(), false).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("stale"),
+            "expected stale-line error, got: {msg}"
+        );
+        assert!(msg.contains("--force"), "expected --force hint, got: {msg}");
+    }
+
+    #[test]
+    fn install_proceeds_with_force_when_stale_invocation_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rc = tmp.path().join(".zshrc");
+        std::fs::write(
+            &rc,
+            "alias ll='ls -la'\neval \"$(voiceforge shell-init zsh)\"\n",
+        )
+        .unwrap();
+
+        let r = install(Shell::Zsh, &rc, &discover(), true).unwrap();
+        assert_eq!(r.action, InstallAction::Created);
+        let after = std::fs::read_to_string(&rc).unwrap();
+        assert!(after.contains(SENTINEL_OPEN));
+    }
+
+    #[test]
+    fn uninstall_strips_block_cleanly() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rc = tmp.path().join(".zshrc");
+        let original = "# top\nalias gs='git status'\n";
+        std::fs::write(&rc, original).unwrap();
+
+        install(Shell::Zsh, &rc, &discover(), false).unwrap();
+        let report = uninstall(&rc).unwrap();
+        assert_eq!(report.action, UninstallAction::Removed);
+
+        let after = std::fs::read_to_string(&rc).unwrap();
+        assert!(!after.contains(SENTINEL_OPEN));
+        assert!(after.contains("alias gs='git status'"));
+        assert!(after.contains("# top"));
+    }
+
+    #[test]
+    fn uninstall_is_noop_when_no_block_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rc = tmp.path().join(".zshrc");
+        std::fs::write(&rc, "alias ll='ls -la'\n").unwrap();
+
+        let report = uninstall(&rc).unwrap();
+        assert_eq!(report.action, UninstallAction::NotPresent);
+        let after = std::fs::read_to_string(&rc).unwrap();
+        assert_eq!(after, "alias ll='ls -la'\n");
+    }
+
+    #[test]
+    fn uninstall_returns_not_present_when_rc_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let rc = tmp.path().join(".zshrc-missing");
+        let report = uninstall(&rc).unwrap();
+        assert_eq!(report.action, UninstallAction::NotPresent);
+    }
+
+    #[test]
+    fn status_reports_installed_and_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let zsh_rc = tmp.path().join(".zshrc");
+        std::fs::write(&zsh_rc, "").unwrap();
+        install(Shell::Zsh, &zsh_rc, &discover(), false).unwrap();
+
+        let statuses = status(tmp.path());
+        let zsh = statuses.iter().find(|s| s.shell == Shell::Zsh).unwrap();
+        let bash = statuses.iter().find(|s| s.shell == Shell::Bash).unwrap();
+        assert!(zsh.installed);
+        assert!(!bash.installed);
     }
 }
