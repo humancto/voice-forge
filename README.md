@@ -60,24 +60,26 @@ voiceforge play --pack peter --event tests_passed
 
 <table>
   <tr>
-    <td align="center" width="120">🍔<br/><sub><b>Peter Griffin</b></sub><br/><sub>shipping</sub></td>
+    <td align="center" width="120">🍔<br/><sub><b>Peter Griffin</b></sub><br/><sub>✅ shipping</sub></td>
+    <td align="center" width="120"><img src="docs/assets/voices/kimmel.jpg" width="80" alt="Jimmy Kimmel"/><br/><sub><b>Jimmy Kimmel</b></sub><br/><sub>✅ shipping</sub></td>
+    <td align="center" width="120"><img src="docs/assets/voices/neil_tyson.jpg" width="80" alt="Neil deGrasse Tyson"/><br/><sub><b>Neil deGrasse Tyson</b></sub><br/><sub>✅ shipping</sub></td>
+    <td align="center" width="120"><img src="docs/assets/voices/trump.jpg" width="80" alt="Donald Trump"/><br/><sub><b>Donald Trump</b></sub><br/><sub>✅ shipping</sub></td>
+  </tr>
+  <tr>
+    <td align="center" width="120"><img src="docs/assets/voices/musk.jpg" width="80" alt="Elon Musk"/><br/><sub><b>Elon Musk</b></sub><br/><sub>✅ shipping</sub></td>
     <td align="center" width="120">👶<br/><sub><b>Stewie Griffin</b></sub><br/><sub>queued</sub></td>
-    <td align="center" width="120"><img src="docs/assets/voices/neil_tyson.jpg" width="80" alt="Neil deGrasse Tyson"/><br/><sub><b>Neil deGrasse Tyson</b></sub><br/><sub>queued</sub></td>
     <td align="center" width="120"><img src="docs/assets/voices/bob_ross.jpg" width="80" alt="Bob Ross"/><br/><sub><b>Bob Ross</b></sub><br/><sub>queued</sub></td>
-  </tr>
-  <tr>
     <td align="center" width="120"><img src="docs/assets/voices/herzog.jpg" width="80" alt="Werner Herzog"/><br/><sub><b>Werner Herzog</b></sub><br/><sub>queued</sub></td>
-    <td align="center" width="120"><img src="docs/assets/voices/ramsay.png" width="80" alt="Gordon Ramsay"/><br/><sub><b>Gordon Ramsay</b></sub><br/><sub>queued</sub></td>
-    <td align="center" width="120"><img src="docs/assets/voices/kimmel.jpg" width="80" alt="Jimmy Kimmel"/><br/><sub><b>Jimmy Kimmel</b></sub><br/><sub>rendering</sub></td>
-    <td align="center" width="120"><img src="docs/assets/voices/musk.jpg" width="80" alt="Elon Musk"/><br/><sub><b>Elon Musk</b></sub><br/><sub>queued</sub></td>
   </tr>
   <tr>
-    <td align="center" width="120"><img src="docs/assets/voices/trump.jpg" width="80" alt="Donald Trump"/><br/><sub><b>Donald Trump</b></sub><br/><sub>queued</sub></td>
+    <td align="center" width="120"><img src="docs/assets/voices/ramsay.png" width="80" alt="Gordon Ramsay"/><br/><sub><b>Gordon Ramsay</b></sub><br/><sub>queued</sub></td>
     <td align="center" width="120"><img src="docs/assets/voices/obama.jpg" width="80" alt="Barack Obama"/><br/><sub><b>Barack Obama</b></sub><br/><sub>queued</sub></td>
     <td align="center" width="120">🤖<br/><sub><b>Bender</b></sub><br/><sub>queued</sub></td>
     <td align="center" width="120">🎨<br/><sub><b>your voice</b></sub><br/><sub><a href="docs/PACK_RENDERING.md">render</a></sub></td>
   </tr>
 </table>
+
+> **🔊 Hear them react to a build failure**: [Peter](https://github.com/humancto/voice-forge-packs/raw/main/packs/peter/wav/build_failed.wav) · [Kimmel](https://github.com/humancto/voice-forge-packs/raw/main/packs/kimmel/wav/build_failed.wav) · [Neil deGrasse Tyson](https://github.com/humancto/voice-forge-packs/raw/main/packs/neil_tyson/wav/build_failed.wav) · [Trump](https://github.com/humancto/voice-forge-packs/raw/main/packs/trump/wav/build_failed.wav) · [Musk](https://github.com/humancto/voice-forge-packs/raw/main/packs/musk/wav/build_failed.wav)
 
 > Photos for real public figures from Wikimedia Commons / Wikipedia (small thumbnails, fair use; see [`docs/assets/voices/ATTRIBUTION.md`](docs/assets/voices/ATTRIBUTION.md)). Cartoon characters use emoji placeholders — we don't ship FOX/Disney cartoon art. Want to contribute a pack? See the [pack content style guide](docs/PACK_CONTENT_GUIDE.md).
 
@@ -123,14 +125,16 @@ test result: FAILED. 3 passed; 1 failed
 
 ## Quick start
 
-**Step 1 — install the binary** (no Python required, ~2 min on a clean Rust cache):
+**Step 1 — install the binary** (~5 seconds via prebuilt; no Python, no Rust toolchain required):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/humancto/voice-forge/main/install.sh | bash
 voiceforge say --text "VoiceForge is ready"
 ```
 
-That alone gets you `voiceforge run -- <cmd>` reactions in the OS default voice (`say` on macOS, `espeak-ng` on Linux). For real voice cloning, continue:
+The installer fetches a prebuilt binary for `darwin-arm64`, `darwin-x86_64`, `linux-x86_64`, or `linux-aarch64` (glibc ≥ 2.35) from the [latest release](https://github.com/humancto/voice-forge/releases/latest), sha256-verifies, and installs to `/usr/local/bin/voiceforge` (or `~/.local/bin` if `/usr/local` isn't writable). Falls through to a from-source build only on unsupported platforms or download failure.
+
+That alone gets you `voiceforge run -- <cmd>` reactions in the OS default voice (`say` on macOS, `espeak-ng` on Linux), plus the entire pack ecosystem (`voiceforge pack install peter && voiceforge play --pack peter --event build_failed`). For voice cloning from your own audio, continue:
 
 **Step 2 — install the cloning runtime** (~10 min, ~1.7 GB; macOS arm64 only for now):
 
@@ -223,16 +227,22 @@ Two layers, all local:
 
 CLI subcommands (run any with `--help`):
 
-|                                              |                                                                                                  |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `voiceforge install-cloning`                 | One-shot install of Python 3.11 + ffmpeg@6 + GPT-SoVITS v2 (`--check`, `--force`, `--uninstall`) |
-| `voiceforge clone <name> <source>`           | Clone a voice from a local audio file ≥ 60 s                                                     |
-| `voiceforge say --voice <name> --text "..."` | One-shot synthesis through embedded / server / cloning engines (auto-routed)                     |
-| `voiceforge run -- <cmd>`                    | Run a command, react on success/failure with a random line from `events.json`                    |
-| `voiceforge ingest <input> <output>`         | Transcode any audio source to canonical 22050 Hz mono 16-bit PCM                                 |
-| `voiceforge doctor`                          | 9-check system health, JSON via `--json`                                                         |
-| `voiceforge voices`                          | List built-in presets                                                                            |
-| `voiceforge daemon`                          | (heartbeat placeholder; real Unix-socket daemon is roadmap 1.8)                                  |
+|                                               |                                                                                                               |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `voiceforge install-cloning`                  | One-shot install of Python 3.11 + ffmpeg@6 + GPT-SoVITS v2 (`--check`, `--force`, `--uninstall`; macOS arm64) |
+| `voiceforge clone <name> <source>`            | Clone a voice from a local audio file ≥ 60 s                                                                  |
+| `voiceforge say --voice <name> --text "..."`  | One-shot synthesis through embedded / server / cloning engines (auto-routed)                                  |
+| `voiceforge run -- <cmd>`                     | Run a command, react on success/failure with a random line from `events.json`                                 |
+| `voiceforge ingest <input> <output>`          | Transcode any audio source to canonical 22050 Hz mono 16-bit PCM                                              |
+| `voiceforge doctor`                           | 10-check system health (incl. daemon socket probe), JSON via `--json`                                         |
+| `voiceforge voices`                           | List built-in presets + cloned voices, `voices remove <name>` deletes                                         |
+| `voiceforge use <name>`                       | Set active default voice in `~/.voiceforge/config.toml`                                                       |
+| `voiceforge daemon`                           | Unix-socket NDJSON server at `~/.voiceforge/voiceforge.sock` (ROADMAP 1.8)                                    |
+| `voiceforge send <event> [--text ...]`        | One-shot daemon client; exits 0/1/2/4 on outcome (ROADMAP 1.9)                                                |
+| `voiceforge hook [--profile claude-code]`     | Pipe NDJSON events from AI agents into the daemon (ROADMAP 3.3)                                               |
+| `voiceforge shell-init <zsh\|bash> --install` | Idempotent shell hook install for command-success/fail events (ROADMAP 3.1)                                   |
+| `voiceforge play --pack <name> --event <id>`  | Sub-100ms playback of pre-rendered pack WAVs (ROADMAP 6.5)                                                    |
+| `voiceforge pack {list,install,remove,info}`  | Manage installed voice packs from the static index (ROADMAP 6.2)                                              |
 
 Other shipped infrastructure:
 
@@ -243,7 +253,7 @@ Other shipped infrastructure:
 - ✅ CI: rustfmt, clippy `-D warnings`, doc-link check, integration tests on macOS + Linux
 - ✅ Verified end-to-end: 100% Whisper round-trip on real Trump speech via the cloning pipeline
 
-The full backlog and per-item status lives in [`ROADMAP.md`](ROADMAP.md). Currently 12 items shipped, headline ones: 1.1 (embedded fallback), 1.2 (first-run bootstrap), 1.6 (install.sh), 1.7 (doctor), 2.1 (install-cloning), **2.5 (clone)**.
+The full backlog and per-item status lives in [`ROADMAP.md`](ROADMAP.md). Currently **25 items shipped**, headline ones: 1.1 (embedded fallback), 1.2 (first-run bootstrap), 1.5 (cross-platform binary releases), 1.6 (install.sh), 1.7 (doctor), **1.8 (Unix-socket daemon)**, 1.9 (`voiceforge send`), 2.1 (install-cloning), **2.5 (clone)**, **3.1 (shell-init for zsh+bash)**, **3.3 (`voiceforge hook` for AI agents)**, 6.2 (`voiceforge pack` subcommand), 6.4 (5-pack initial release).
 
 ## Project docs
 

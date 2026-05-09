@@ -592,24 +592,45 @@ ok: 9   warn: 0   error: 0</div>
 
       <p style="margin-top: 16px;">packs live in a <a href="https://github.com/humancto/voice-forge-packs">separate index</a>. install with <code>voiceforge pack install &lt;name&gt;</code>, play with <code>voiceforge play --pack &lt;name&gt; --event &lt;id&gt;</code>. <strong>~50ms playback</strong> — no synth, no model load, just rodio reading a WAV. exit code 3 means "event not in pack" so callers (Claude Code hooks etc.) can fall back to <code>voiceforge say</code>.</p>
 
-      <h3 style="margin-top: 36px; font-size: 18px; color: var(--ink);">shipping today</h3>
-      <table style="width: 100%; max-width: 640px; margin: 16px 0; border-collapse: collapse;">
+      <h3 style="margin-top: 36px; font-size: 18px; color: var(--ink);">shipping today — 5 voices, all reacting to <code>build_failed</code></h3>
+      <p style="margin-top: 8px; color: var(--mute);">click play. each one was rendered locally from a 60-second source clip via fish-speech S2 Pro — no fine-tune, no GPU. you can do this with any voice.</p>
+      <table style="width: 100%; max-width: 720px; margin: 16px 0; border-collapse: collapse;">
         <tr style="background: var(--surface-2);">
-          <td style="padding: 10px;"><strong>peter</strong></td>
-          <td style="padding: 10px; color: var(--mute);">Peter Griffin (Family Guy)</td>
-          <td style="padding: 10px; color: var(--green);">v0.1.3 — shipped</td>
+          <td style="padding: 10px; vertical-align: middle;"><strong>peter</strong></td>
+          <td style="padding: 10px; color: var(--mute); vertical-align: middle;">Peter Griffin (Family Guy)</td>
+          <td style="padding: 10px; vertical-align: middle;"><audio controls preload="none" style="height: 28px; max-width: 220px;" src="https://github.com/humancto/voice-forge-packs/raw/main/packs/peter/wav/build_failed.wav"></audio></td>
+          <td style="padding: 10px; color: var(--green); vertical-align: middle;">v0.1.4</td>
         </tr>
         <tr>
-          <td style="padding: 10px;"><strong>kimmel</strong></td>
-          <td style="padding: 10px; color: var(--mute);">Jimmy Kimmel</td>
-          <td style="padding: 10px; color: var(--green);">v0.1.0 — shipped</td>
+          <td style="padding: 10px; vertical-align: middle;"><strong>kimmel</strong></td>
+          <td style="padding: 10px; color: var(--mute); vertical-align: middle;">Jimmy Kimmel</td>
+          <td style="padding: 10px; vertical-align: middle;"><audio controls preload="none" style="height: 28px; max-width: 220px;" src="https://github.com/humancto/voice-forge-packs/raw/main/packs/kimmel/wav/build_failed.wav"></audio></td>
+          <td style="padding: 10px; color: var(--green); vertical-align: middle;">v0.1.0</td>
         </tr>
         <tr style="background: var(--surface-2);">
-          <td style="padding: 10px;">stewie · neil_tyson · bob_ross · herzog · ramsay · trump · obama · musk</td>
-          <td style="padding: 10px; color: var(--mute);">queued</td>
-          <td style="padding: 10px; color: var(--mute);">phrase manifests authored, awaiting clean reference clips</td>
+          <td style="padding: 10px; vertical-align: middle;"><strong>neil_tyson</strong></td>
+          <td style="padding: 10px; color: var(--mute); vertical-align: middle;">Neil deGrasse Tyson</td>
+          <td style="padding: 10px; vertical-align: middle;"><audio controls preload="none" style="height: 28px; max-width: 220px;" src="https://github.com/humancto/voice-forge-packs/raw/main/packs/neil_tyson/wav/build_failed.wav"></audio></td>
+          <td style="padding: 10px; color: var(--green); vertical-align: middle;">v0.1.0</td>
+        </tr>
+        <tr>
+          <td style="padding: 10px; vertical-align: middle;"><strong>trump</strong></td>
+          <td style="padding: 10px; color: var(--mute); vertical-align: middle;">Donald Trump</td>
+          <td style="padding: 10px; vertical-align: middle;"><audio controls preload="none" style="height: 28px; max-width: 220px;" src="https://github.com/humancto/voice-forge-packs/raw/main/packs/trump/wav/build_failed.wav"></audio></td>
+          <td style="padding: 10px; color: var(--green); vertical-align: middle;">v0.1.0</td>
+        </tr>
+        <tr style="background: var(--surface-2);">
+          <td style="padding: 10px; vertical-align: middle;"><strong>musk</strong></td>
+          <td style="padding: 10px; color: var(--mute); vertical-align: middle;">Elon Musk</td>
+          <td style="padding: 10px; vertical-align: middle;"><audio controls preload="none" style="height: 28px; max-width: 220px;" src="https://github.com/humancto/voice-forge-packs/raw/main/packs/musk/wav/build_failed.wav"></audio></td>
+          <td style="padding: 10px; color: var(--green); vertical-align: middle;">v0.1.0</td>
+        </tr>
+        <tr>
+          <td style="padding: 10px; color: var(--mute);">stewie · bob_ross · herzog · ramsay · obama · bender</td>
+          <td style="padding: 10px; color: var(--mute);" colspan="3">queued — phrase manifests authored, awaiting clean reference clips. <a href="https://github.com/humancto/voice-forge/blob/main/docs/PACK_RENDERING.md">render your own</a> in ~1 hour, no GPU.</td>
         </tr>
       </table>
+      <p style="margin-top: 12px; color: var(--mute); font-size: 13px;">install one with <code>voiceforge pack install peter</code>. play with <code>voiceforge play --pack peter --event build_failed</code>. ~50ms warm path, no synth.</p>
 
       <p style="margin-top: 28px;"><strong>anyone can render their own packs.</strong> the full pipeline is documented in <a href="https://github.com/humancto/voice-forge/blob/main/docs/PACK_RENDERING.md"><code>docs/PACK_RENDERING.md</code></a> — clone any character voice, locally, in under an hour, no GPU required. CPU works; renting a GPU box for 10 minutes makes it a one-coffee operation. content guide for community contributors at <a href="https://github.com/humancto/voice-forge/blob/main/docs/PACK_CONTENT_GUIDE.md"><code>PACK_CONTENT_GUIDE.md</code></a>.</p>
       <p style="margin-top: 14px; color: var(--mute);">packs are educational / research / local-testing use only — see <a href="https://github.com/humancto/voice-forge-packs/blob/main/LICENSE-AUDIO.md">LICENSE-AUDIO.md</a>. attribution required, 48-hour takedown policy. the engine repo stays clean of celebrity audio so per-pack DMCAs only affect <code>voice-forge-packs</code>.</p>
