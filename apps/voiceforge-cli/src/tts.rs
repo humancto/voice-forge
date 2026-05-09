@@ -35,6 +35,19 @@ pub struct Engine {
 }
 
 impl Engine {
+    /// Test-only constructor: build an Engine with just the embedded
+    /// backend (no server, no cloning). Lets cross-module tests
+    /// (e.g. `daemon_server::tests`) use the same fake-synth machinery
+    /// `tts::tests` does without re-deriving it.
+    #[cfg(test)]
+    pub(crate) fn for_testing(embedded: EmbeddedEngine) -> Self {
+        Self {
+            embedded,
+            server: None,
+            cloning: None,
+        }
+    }
+
     pub async fn speak(&self, text: &str, voice: &str) -> Result<PathBuf> {
         if text.len() > MAX_TEXT_LEN {
             bail!(

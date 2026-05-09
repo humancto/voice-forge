@@ -370,3 +370,378 @@ where
     writer.flush().await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tts::{Backend, EmbeddedEngine, SynthBuilder};
+    use serde_json::Value;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex;
+    use std::time::Duration;
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::UnixStream;
+
+    /// Test sink that records the WAV paths the daemon hands it. No
+    /// audio device touched — `play` is a no-op that bumps a counter.
+    #[derive(Default)]
+    struct RecordingSink {
+        played: Mutex<Vec<PathBuf>>,
+        count: AtomicUsize,
+    }
+
+    impl RecordingSink {
+        fn count(&self) -> usize {
+            self.count.load(Ordering::SeqCst)
+        }
+    }
+
+    impl AudioSink for RecordingSink {
+        fn play(&self, wav_path: &Path) -> Result<()> {
+            self.played.lock().unwrap().push(wav_path.to_path_buf());
+            self.count.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    /// Tiny synth-builder closure: writes a 4-byte placeholder WAV via
+    /// `sh -c 'printf RIFF > path'`. Mirrors the `fake_synth` pattern
+    /// in `tts::tests`. Doesn't need to be a real WAV — `RecordingSink`
+    /// never decodes it.
+    fn fake_synth() -> SynthBuilder {
+        Box::new(|s| {
+            let out = s.output_aiff_or_wav.to_owned();
+            let mut cmd = tokio::process::Command::new("sh");
+            cmd.arg("-c").arg(format!(
+                "printf 'RIFF\\0\\0\\0\\0WAVEfmt ' > '{}'",
+                out.display()
+            ));
+            cmd
+        })
+    }
+
+    /// Build a minimal-but-real Engine + Rules + sink triple for tests.
+    /// Returns the four pieces needed to spin up `serve` in a tempdir.
+    fn fixture(tmp_root: &Path) -> (DaemonConfig, Arc<Engine>, Arc<Rules>, Arc<RecordingSink>) {
+        let socket_path = tmp_root.join("voiceforge.sock");
+        let cfg = DaemonConfig { socket_path };
+
+        let cache_dir = tmp_root.join("cache");
+        let embedded = EmbeddedEngine::for_testing(cache_dir, Backend::MacosSay, fake_synth());
+        let engine = Arc::new(Engine::for_testing(embedded));
+
+        let rules = Arc::new(Rules::default_builtin());
+        let sink = Arc::new(RecordingSink::default());
+
+        (cfg, engine, rules, sink)
+    }
+
+    /// Spawn `serve` on a tokio task and wait until the socket file
+    /// exists (bind succeeded). Returns the join handle so the test
+    /// can drop it / abort it cleanly.
+    async fn spawn_serve(
+        cfg: DaemonConfig,
+        engine: Arc<Engine>,
+        rules: Arc<Rules>,
+        sink: Arc<dyn AudioSink>,
+    ) -> tokio::task::JoinHandle<Result<()>> {
+        let socket_path = cfg.socket_path.clone();
+        let handle = tokio::spawn(async move { serve(cfg, engine, rules, sink).await });
+        // Wait for bind. Tight bound — this is a local socket on the same FS.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while tokio::time::Instant::now() < deadline {
+            if probe_socket(&socket_path).await.unwrap_or(false) {
+                return handle;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("daemon never bound at {}", socket_path.display());
+    }
+
+    /// Send one frame on a fresh connection, return the (parsed-JSON) reply.
+    async fn send_one(socket_path: &Path, frame: &str) -> Value {
+        let mut stream = UnixStream::connect(socket_path)
+            .await
+            .expect("client connect");
+        stream.write_all(frame.as_bytes()).await.expect("write");
+        if !frame.ends_with('\n') {
+            stream.write_all(b"\n").await.expect("write newline");
+        }
+        let (read_half, _) = stream.into_split();
+        let mut reader = BufReader::new(read_half);
+        let mut line = String::new();
+        AsyncBufReadExt::read_line(&mut reader, &mut line)
+            .await
+            .expect("read reply");
+        serde_json::from_str(line.trim()).expect("reply is JSON")
+    }
+
+    // 1. event-only frame → ok + spoken matches a rules entry
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn serve_handles_event_frame() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (cfg, engine, rules, sink) = fixture(tmp.path());
+        let socket = cfg.socket_path.clone();
+        let handle = spawn_serve(cfg, engine, rules, sink.clone() as Arc<dyn AudioSink>).await;
+
+        let reply = send_one(&socket, r#"{"event":"build_failed"}"#).await;
+        assert_eq!(reply["ok"], Value::Bool(true));
+        let spoken = reply["spoken"].as_str().unwrap();
+        assert!(
+            [
+                "The build failed again.",
+                "That did not go well.",
+                "The compiler has chosen violence."
+            ]
+            .contains(&spoken),
+            "unexpected spoken line: {spoken:?}",
+        );
+        // Wait for the spawn_blocking play call to complete.
+        for _ in 0..50 {
+            if sink.count() >= 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(sink.count(), 1);
+        handle.abort();
+    }
+
+    // 2. text-only frame → ok + spoken == text
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn serve_handles_text_only_frame() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (cfg, engine, rules, sink) = fixture(tmp.path());
+        let socket = cfg.socket_path.clone();
+        let handle = spawn_serve(cfg, engine, rules, sink.clone() as Arc<dyn AudioSink>).await;
+
+        let reply = send_one(&socket, r#"{"text":"hello there","voice":"default"}"#).await;
+        assert_eq!(reply["ok"], Value::Bool(true));
+        assert_eq!(reply["spoken"], "hello there");
+        assert_eq!(reply["voice"], "default");
+        handle.abort();
+    }
+
+    // 3. {} → ok:false
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn serve_rejects_empty_frame() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (cfg, engine, rules, sink) = fixture(tmp.path());
+        let socket = cfg.socket_path.clone();
+        let handle = spawn_serve(cfg, engine, rules, sink as Arc<dyn AudioSink>).await;
+
+        let reply = send_one(&socket, "{}").await;
+        assert_eq!(reply["ok"], Value::Bool(false));
+        assert!(reply["error"].as_str().unwrap().contains("event"));
+        handle.abort();
+    }
+
+    // 4. stale regular file at the socket path is unlinked + bind succeeds
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn serve_unlinks_stale_socket() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (cfg, engine, rules, sink) = fixture(tmp.path());
+        // Pre-create a regular file (not a real socket) at the path.
+        std::fs::write(&cfg.socket_path, b"stale").expect("write stale");
+        let socket = cfg.socket_path.clone();
+        let handle = spawn_serve(cfg, engine, rules, sink as Arc<dyn AudioSink>).await;
+
+        // If we got here, bind succeeded after stale-detect unlinked.
+        assert!(probe_socket(&socket).await.expect("probe"));
+        handle.abort();
+    }
+
+    // 5. second daemon on the same path errors (live daemon present)
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn serve_refuses_when_live_daemon_present() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (cfg, engine, rules, sink) = fixture(tmp.path());
+        let socket = cfg.socket_path.clone();
+        let h1 = spawn_serve(
+            cfg.clone(),
+            engine.clone(),
+            rules.clone(),
+            sink.clone() as Arc<dyn AudioSink>,
+        )
+        .await;
+
+        // Try a second serve on the same path.
+        let result = serve(cfg, engine, rules, sink as Arc<dyn AudioSink>).await;
+        assert!(result.is_err(), "second daemon must refuse to bind");
+        let msg = format!("{:#}", result.unwrap_err());
+        assert!(
+            msg.contains("already listening") || msg.contains("binding"),
+            "unexpected error: {msg}",
+        );
+        // The first daemon should still own the socket.
+        assert!(probe_socket(&socket).await.expect("probe"));
+        h1.abort();
+    }
+
+    // 6. fan-out 8 concurrent clients
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn serve_handles_multiple_clients_concurrently() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (cfg, engine, rules, sink) = fixture(tmp.path());
+        let socket = cfg.socket_path.clone();
+        let handle = spawn_serve(cfg, engine, rules, sink.clone() as Arc<dyn AudioSink>).await;
+
+        let mut joins = Vec::new();
+        for i in 0..8 {
+            let socket = socket.clone();
+            joins.push(tokio::spawn(async move {
+                send_one(
+                    &socket,
+                    &format!(r#"{{"text":"msg-{i}","voice":"default"}}"#),
+                )
+                .await
+            }));
+        }
+        for j in joins {
+            let reply = j.await.expect("join");
+            assert_eq!(reply["ok"], Value::Bool(true));
+        }
+
+        // Wait for all 8 spawn_blocking play calls to record.
+        for _ in 0..100 {
+            if sink.count() >= 8 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(sink.count(), 8);
+        handle.abort();
+    }
+
+    // 7. malformed mid-stream — frame 1 OK, frame 2 err, frame 3 OK,
+    //    connection stays open across all three.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn serve_handles_malformed_mid_stream() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (cfg, engine, rules, sink) = fixture(tmp.path());
+        let socket = cfg.socket_path.clone();
+        let handle = spawn_serve(cfg, engine, rules, sink as Arc<dyn AudioSink>).await;
+
+        let mut stream = UnixStream::connect(&socket).await.expect("connect");
+        stream
+            .write_all(b"{\"text\":\"a\"}\n{garbage\n{\"text\":\"b\"}\n")
+            .await
+            .expect("write");
+        let (read_half, _) = stream.into_split();
+        let mut reader = BufReader::new(read_half);
+
+        let mut line = String::new();
+        AsyncBufReadExt::read_line(&mut reader, &mut line)
+            .await
+            .expect("read 1");
+        let r1: Value = serde_json::from_str(line.trim()).expect("parse 1");
+        assert_eq!(r1["ok"], Value::Bool(true));
+
+        line.clear();
+        AsyncBufReadExt::read_line(&mut reader, &mut line)
+            .await
+            .expect("read 2");
+        let r2: Value = serde_json::from_str(line.trim()).expect("parse 2");
+        assert_eq!(r2["ok"], Value::Bool(false));
+
+        line.clear();
+        AsyncBufReadExt::read_line(&mut reader, &mut line)
+            .await
+            .expect("read 3");
+        let r3: Value = serde_json::from_str(line.trim()).expect("parse 3");
+        assert_eq!(r3["ok"], Value::Bool(true));
+
+        handle.abort();
+    }
+
+    // 8. oversized frame → clean rejection, daemon survives
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn serve_rejects_oversized_frame() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (cfg, engine, rules, sink) = fixture(tmp.path());
+        let socket = cfg.socket_path.clone();
+        let handle = spawn_serve(cfg, engine, rules, sink as Arc<dyn AudioSink>).await;
+
+        let stream = UnixStream::connect(&socket).await.expect("connect");
+        let (read_half, mut write_half) = stream.into_split();
+        // 128 KiB of 'a'. Well over the 64 KiB cap. The daemon will
+        // detect overflow as soon as it has filled the take(MAX+1)
+        // window, send back an error, and close the connection. From
+        // the client's perspective that surfaces as BrokenPipe partway
+        // through the write — accept that and proceed to read the reply
+        // off the read half (which is independent and still valid).
+        let huge = "a".repeat(128 * 1024);
+        let _ = write_half.write_all(huge.as_bytes()).await;
+        let _ = write_half.write_all(b"\n").await;
+        let _ = write_half.shutdown().await;
+
+        let mut reader = BufReader::new(read_half);
+        let mut line = String::new();
+        AsyncBufReadExt::read_line(&mut reader, &mut line)
+            .await
+            .expect("read reply");
+        let reply: Value = serde_json::from_str(line.trim()).expect("parse");
+        assert_eq!(reply["ok"], Value::Bool(false));
+        assert!(reply["error"].as_str().unwrap().contains("too large"));
+
+        // Daemon must still accept new connections.
+        let r = send_one(&socket, r#"{"text":"after-oversized"}"#).await;
+        assert_eq!(r["ok"], Value::Bool(true));
+        handle.abort();
+    }
+
+    // 9. client disconnects before reading reply — daemon survives
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn serve_survives_client_disconnect_before_reply() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (cfg, engine, rules, sink) = fixture(tmp.path());
+        let socket = cfg.socket_path.clone();
+        let handle = spawn_serve(cfg, engine, rules, sink as Arc<dyn AudioSink>).await;
+
+        {
+            let mut stream = UnixStream::connect(&socket).await.expect("connect");
+            stream
+                .write_all(b"{\"text\":\"bye\"}\n")
+                .await
+                .expect("write");
+            stream.shutdown().await.expect("shutdown");
+            // Drop the stream immediately without reading the reply.
+        }
+        // Give the daemon a moment to notice the BrokenPipe.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Daemon must still accept new connections.
+        let r = send_one(&socket, r#"{"text":"after-disconnect"}"#).await;
+        assert_eq!(r["ok"], Value::Bool(true));
+        handle.abort();
+    }
+
+    // 10. partial line write — daemon waits for the rest, then processes
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn serve_handles_partial_line_write() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (cfg, engine, rules, sink) = fixture(tmp.path());
+        let socket = cfg.socket_path.clone();
+        let handle = spawn_serve(cfg, engine, rules, sink as Arc<dyn AudioSink>).await;
+
+        let mut stream = UnixStream::connect(&socket).await.expect("connect");
+        stream
+            .write_all(b"{\"text\":\"hel")
+            .await
+            .expect("write half 1");
+        stream.flush().await.expect("flush");
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        stream.write_all(b"lo\"}\n").await.expect("write half 2");
+
+        let (read_half, _) = stream.into_split();
+        let mut reader = BufReader::new(read_half);
+        let mut line = String::new();
+        AsyncBufReadExt::read_line(&mut reader, &mut line)
+            .await
+            .expect("read reply");
+        let reply: Value = serde_json::from_str(line.trim()).expect("parse");
+        assert_eq!(reply["ok"], Value::Bool(true));
+        assert_eq!(reply["spoken"], "hello");
+        handle.abort();
+    }
+}
