@@ -90,8 +90,14 @@ jobs:
           deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main universe
           EOF
             sudo apt-get update
+            # libc6-dev-arm64-cross provides the arm64 libc headers under
+            # /usr/aarch64-linux-gnu/include where aarch64-linux-gnu-gcc
+            # looks by default. Without it, cc-rs (used by `ring`) falls
+            # back to the host's /usr/include/stdint.h and dies on the
+            # missing bits/libc-header-start.h.
             sudo apt-get install -y --no-install-recommends \
               gcc-aarch64-linux-gnu \
+              libc6-dev-arm64-cross \
               libasound2-dev \
               libasound2-dev:arm64
           else
