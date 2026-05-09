@@ -85,20 +85,33 @@ voiceforge play --pack peter --event tests_passed
 
 ### Plug into any AI coding agent
 
-VoiceForge is designed to be invoked from agent hooks (Claude Code, Cursor, Codex, Continue, Aider, etc.). Any agent that can run a shell command on a tool-use event can speak through VoiceForge:
+Full guide: **[`docs/AGENTS.md`](docs/AGENTS.md)** — Claude Code, Cursor, Continue, Aider, generic streaming sources, plus the four moving pieces (daemon / send / hook / shell-init) and how to pick which one for which agent.
+
+The headline setup, by surface area:
 
 ```bash
-# Claude Code post-tool-use hook (example)
-voiceforge say --voice peter --text "Tests passed."
+# Always-on prerequisite: the daemon (one-time)
+voiceforge daemon &
+disown
 
-# Or, with a pre-rendered pack — sub-100ms WAV playback (no synth):
-voiceforge play --pack peter --event tests_passed      # roadmap 6.5
+# Claude Code — uses its hook system + voiceforge hook --profile
+# In ~/.claude/settings.json:
+#   { "hooks": { "Notification": [{ "command": "voiceforge hook --profile claude-code" }] } }
 
-# Or pipe structured JSON events from any source:
-echo '{"event":"tests_passed"}' | voiceforge hook      # roadmap 3.3
+# Cursor / Continue / Aider — anything that runs shell on events
+voiceforge send agent_done --message "deploy finished"
+
+# Generic streaming source (logfile, MCP server, custom integration)
+tail -f agent.log | voiceforge hook --event-from event_type
+
+# Catch-all for any terminal command the agent runs (>3s)
+voiceforge shell-init --install zsh   # idempotent; one-time
+
+# Pre-rendered pack (sub-100ms playback, no synth)
+voiceforge play --pack peter --event tests_passed
 ```
 
-`say` synthesizes from text on demand. `play` looks up a pre-rendered WAV in an installed pack and plays it directly — no model load, no synth call. `hook` is the JSON event-stream entry point for agent integrations (a different concept from `voiceforge ingest`, which transcodes audio sources).
+Each surface ships today (ROADMAP 1.8 / 1.9 / 3.3 / 3.1 / 6.5). The daemon does voice routing automatically — pre-rendered packs play in ~50ms, live cloning in ~2-3s, embedded fallback in <500ms.
 
 When your agent is doing 20 minutes of background work and finally finishes a deploy, you hear Peter announce it from the kitchen. That's the whole pitch.
 
@@ -180,9 +193,14 @@ bash install.sh
 Override defaults:
 
 ```bash
-VOICEFORGE_REF=v0.2.0 \
-VOICEFORGE_INSTALL_DIR=$HOME/.local/bin \
-bash install.sh
+# Pin a specific prebuilt release (default: latest):
+VOICEFORGE_VERSION=v0.2.0 bash install.sh
+
+# Force from-source build (e.g. for an unsupported platform):
+VOICEFORGE_FORCE_SOURCE=1 VOICEFORGE_REF=main bash install.sh
+
+# Override the install dir:
+VOICEFORGE_INSTALL_DIR=$HOME/.local/bin bash install.sh
 ```
 
 ### Build from source manually
