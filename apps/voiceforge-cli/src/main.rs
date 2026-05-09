@@ -19,6 +19,7 @@ mod packs;
 mod paths;
 mod rules;
 mod runner;
+mod shell_init;
 mod tts;
 mod voices;
 
