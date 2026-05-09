@@ -10,6 +10,7 @@ mod bootstrap;
 mod clone;
 mod config;
 mod daemon;
+mod daemon_client;
 mod daemon_server;
 mod doctor;
 mod ingest;
@@ -49,6 +50,32 @@ enum Commands {
         command: Vec<String>,
     },
     Daemon,
+    /// Drop one event onto the daemon's Unix socket and print its
+    /// reply. Companion to `voiceforge daemon`. Either `event` or
+    /// `--text` must be supplied. Exit codes: 0 on `ok:true`, 1 on
+    /// `ok:false`, 2 on not-reachable, 4 on post-connect protocol
+    /// failure.
+    Send {
+        /// Event name (looked up in the rules table). Required unless
+        /// `--text` is supplied.
+        event: Option<String>,
+        /// Bypass the rules table — speak this verbatim. Wins over
+        /// the rule's text.
+        #[arg(long)]
+        text: Option<String>,
+        /// Override the rule's voice. When `--text` is set without
+        /// `--voice`, defaults to "default".
+        #[arg(long)]
+        voice: Option<String>,
+        /// Free-form context (logged by daemon, not spoken). Forward-
+        /// compat with claude-code hook payloads.
+        #[arg(long)]
+        message: Option<String>,
+        /// Print the raw daemon reply line on stdout instead of a
+        /// human summary.
+        #[arg(long)]
+        json: bool,
+    },
     /// List voices (built-in presets + cloned). Active voice marked with `*`.
     Voices {
         #[command(subcommand)]
@@ -204,6 +231,16 @@ async fn main() -> Result<()> {
         }
         Commands::Daemon => {
             daemon::run().await?;
+        }
+        Commands::Send {
+            event,
+            text,
+            voice,
+            message,
+            json,
+        } => {
+            let exit_code = run_send(event, text, voice, message, json).await;
+            std::process::exit(exit_code);
         }
         Commands::Voices { action } => match action {
             None => list_voices_cmd()?,
@@ -472,6 +509,86 @@ fn resolve_voice(flag: Option<String>) -> String {
         eprintln!("voiceforge: using active voice: {active} (set via `voiceforge use`)");
     }
     active
+}
+
+/// Read a duration env override, defaulting if unset / unparseable /
+/// out of range. Silently falls back so a malformed env var doesn't
+/// brick the CLI.
+fn duration_env(key: &str, default_ms: u64, min_ms: u64, max_ms: u64) -> std::time::Duration {
+    let raw = std::env::var(key).ok();
+    let parsed = raw
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(|n| n.clamp(min_ms, max_ms))
+        .unwrap_or(default_ms);
+    std::time::Duration::from_millis(parsed)
+}
+
+/// `voiceforge send` dispatcher. Returns the process exit code.
+/// Stays in main.rs (not in `daemon_client`) so env reads / output
+/// formatting / exit-code mapping live at the CLI boundary; the
+/// `daemon_client::send` API is a pure function of its arguments.
+async fn run_send(
+    event: Option<String>,
+    text: Option<String>,
+    voice: Option<String>,
+    message: Option<String>,
+    json: bool,
+) -> i32 {
+    if event.is_none() && text.is_none() {
+        eprintln!(
+            "voiceforge send: must supply either an event name or --text. See `voiceforge send --help`."
+        );
+        return 3;
+    }
+
+    let socket_path = match daemon_server::DaemonConfig::default_path() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("voiceforge send: {e:#}");
+            return 2;
+        }
+    };
+
+    let connect_timeout = duration_env("VOICEFORGE_SEND_TIMEOUT_MS", 1000, 50, 30_000);
+    let read_timeout = duration_env("VOICEFORGE_SEND_READ_TIMEOUT_MS", 5000, 100, 60_000);
+
+    let req = daemon_client::SendRequest {
+        event,
+        text,
+        voice,
+        message,
+    };
+
+    match daemon_client::send(&socket_path, &req, connect_timeout, read_timeout).await {
+        Ok(daemon_client::SendOutcome::Ok { spoken, voice }) => {
+            if json {
+                // Re-serialize so output is canonical.
+                println!(
+                    "{}",
+                    serde_json::json!({"ok": true, "spoken": spoken, "voice": voice})
+                );
+            } else {
+                println!("spoken: {spoken:?} (voice: {voice})");
+            }
+            0
+        }
+        Ok(daemon_client::SendOutcome::Rejected { error }) => {
+            if json {
+                println!("{}", serde_json::json!({"ok": false, "error": error}));
+            } else {
+                eprintln!("voiceforge send: daemon rejected frame: {error}");
+            }
+            1
+        }
+        Err(daemon_client::SendError::NotReachable(msg)) => {
+            eprintln!("voiceforge send: {msg}");
+            2
+        }
+        Err(daemon_client::SendError::Protocol(msg)) => {
+            eprintln!("voiceforge send: {msg}");
+            4
+        }
+    }
 }
 
 fn use_voice_cmd(name: &str) -> Result<()> {

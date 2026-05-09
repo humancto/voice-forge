@@ -371,27 +371,27 @@ where
     Ok(())
 }
 
+/// Test fixtures shared between `daemon_server::tests` and
+/// `daemon_client::tests`. Lives behind `#[cfg(test)]` so it's
+/// invisible to release builds; `pub(crate)` so other modules'
+/// test mods can `use crate::daemon_server::test_support::*`.
 #[cfg(test)]
-mod tests {
+pub(crate) mod test_support {
     use super::*;
     use crate::tts::{Backend, EmbeddedEngine, SynthBuilder};
-    use serde_json::Value;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
-    use std::time::Duration;
-    use tokio::io::AsyncWriteExt;
-    use tokio::net::UnixStream;
 
     /// Test sink that records the WAV paths the daemon hands it. No
     /// audio device touched — `play` is a no-op that bumps a counter.
     #[derive(Default)]
-    struct RecordingSink {
+    pub(crate) struct RecordingSink {
         played: Mutex<Vec<PathBuf>>,
         count: AtomicUsize,
     }
 
     impl RecordingSink {
-        fn count(&self) -> usize {
+        pub(crate) fn count(&self) -> usize {
             self.count.load(Ordering::SeqCst)
         }
     }
@@ -408,7 +408,7 @@ mod tests {
     /// `sh -c 'printf RIFF > path'`. Mirrors the `fake_synth` pattern
     /// in `tts::tests`. Doesn't need to be a real WAV — `RecordingSink`
     /// never decodes it.
-    fn fake_synth() -> SynthBuilder {
+    pub(crate) fn fake_synth() -> SynthBuilder {
         Box::new(|s| {
             let out = s.output_aiff_or_wav.to_owned();
             let mut cmd = tokio::process::Command::new("sh");
@@ -422,7 +422,9 @@ mod tests {
 
     /// Build a minimal-but-real Engine + Rules + sink triple for tests.
     /// Returns the four pieces needed to spin up `serve` in a tempdir.
-    fn fixture(tmp_root: &Path) -> (DaemonConfig, Arc<Engine>, Arc<Rules>, Arc<RecordingSink>) {
+    pub(crate) fn fixture(
+        tmp_root: &Path,
+    ) -> (DaemonConfig, Arc<Engine>, Arc<Rules>, Arc<RecordingSink>) {
         let socket_path = tmp_root.join("voiceforge.sock");
         let cfg = DaemonConfig { socket_path };
 
@@ -439,7 +441,7 @@ mod tests {
     /// Spawn `serve` on a tokio task and wait until the socket file
     /// exists (bind succeeded). Returns the join handle so the test
     /// can drop it / abort it cleanly.
-    async fn spawn_serve(
+    pub(crate) async fn spawn_serve(
         cfg: DaemonConfig,
         engine: Arc<Engine>,
         rules: Arc<Rules>,
@@ -457,6 +459,16 @@ mod tests {
         }
         panic!("daemon never bound at {}", socket_path.display());
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::*;
+    use super::*;
+    use serde_json::Value;
+    use std::time::Duration;
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::UnixStream;
 
     /// Send one frame on a fresh connection, return the (parsed-JSON) reply.
     async fn send_one(socket_path: &Path, frame: &str) -> Value {
