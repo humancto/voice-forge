@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use std::io::IsTerminal;
 use std::io::Write;
@@ -22,6 +22,7 @@ mod rules;
 mod runner;
 mod shell_init;
 mod tts;
+mod url_ingest;
 mod voices;
 
 #[derive(Parser)]
@@ -338,7 +339,16 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Ingest { input, output } => {
-            let report = ingest::ingest(&input, &output, &ingest::IngestConfig::default())?;
+            // Route URLs through url_ingest::resolve_source first so
+            // the existing path-typed ingest::ingest stays pure. The
+            // ResolvedSource value lives until the end of this arm; if
+            // it carries a tempdir, that tempdir survives the ingest
+            // call. ROADMAP 2.3.
+            let input_str = input.to_string_lossy().into_owned();
+            let resolved = url_ingest::resolve_source(&input_str)
+                .with_context(|| format!("resolving ingest input {input_str:?}"))?;
+            let local_input = resolved.local_path();
+            let report = ingest::ingest(local_input, &output, &ingest::IngestConfig::default())?;
             println!(
                 "ingested {} -> {} ({} Hz, {} ch, {} bit, {}, {:.2}s)",
                 input.display(),
@@ -349,6 +359,7 @@ async fn main() -> Result<()> {
                 report.codec,
                 report.duration_seconds,
             );
+            drop(resolved);
         }
         Commands::InstallCloning {
             force,

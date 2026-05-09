@@ -63,6 +63,7 @@ pub async fn run_doctor() -> DoctorReport {
     checks.push(check_presets());
     checks.push(check_config_toml());
     checks.push(check_ffmpeg().await);
+    checks.push(check_yt_dlp().await);
     checks.push(check_cloning());
     checks.push(check_daemon_socket().await);
 
@@ -349,6 +350,19 @@ async fn check_ffmpeg() -> Check {
     }
 }
 
+/// Optional dependency for `voiceforge clone <URL>` and
+/// `voiceforge ingest <URL>` (ROADMAP 2.3 URL ingest). Warn (not
+/// error) when missing — local-file ingest still works.
+async fn check_yt_dlp() -> Check {
+    match which_async("yt-dlp").await {
+        Some(p) => ok("yt-dlp", p.display().to_string()),
+        None => warn(
+            "yt-dlp",
+            "not on PATH (only needed for URL ingest; install via `brew install yt-dlp` or `pipx install yt-dlp`)",
+        ),
+    }
+}
+
 async fn which_async(bin: &str) -> Option<PathBuf> {
     let out = Command::new("sh")
         .arg("-c")
@@ -472,6 +486,7 @@ mod tests {
             "presets",
             "config.toml",
             "ffmpeg",
+            "yt-dlp",
             "daemon",
         ] {
             assert!(

@@ -174,7 +174,24 @@ That's the full flow. Each `voiceforge run` invocation pays one ~15 s model-load
 
 ### Sourcing audio
 
-Bring your own. We don't bundle yt-dlp — download with whatever tool you like, then point `voiceforge clone` at the local file. The recipe wants:
+Two paths:
+
+**URL** — paste a YouTube/Vimeo/Twitter/podcast/etc. URL directly:
+
+```bash
+voiceforge clone peter https://www.youtube.com/watch?v=T2w5SQ0L65I
+voiceforge ingest https://www.youtube.com/watch?v=T2w5SQ0L65I /tmp/peter_60s.wav
+```
+
+VoiceForge shells out to `yt-dlp` (install via `brew install yt-dlp` or `pipx install yt-dlp`) into a tempdir, then feeds the WAV through the cloning pipeline. Hardened: `--no-playlist`, `--max-filesize 250M`, `--socket-timeout 30`, `--retries 3`. Schemeless hostnames (`youtube.com/...`) are deliberately not auto-detected — prefix with `https://`.
+
+**Local file** — download with whatever tool you like, then:
+
+```bash
+voiceforge clone peter ./peter_griffin_60s.wav
+```
+
+The recipe wants:
 
 - ≥ 60 seconds duration
 - Single speaker, no music / sound effects / other voices
