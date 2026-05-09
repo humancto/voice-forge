@@ -5,6 +5,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 mod audio;
+mod audio_sink;
 mod bootstrap;
 mod clone;
 mod config;
