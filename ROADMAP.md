@@ -23,7 +23,7 @@ Each unchecked item is one PR with tests. Expert agent (auto-detected from stack
 - [x] **1.2 First-run bootstrap: create `~/.voiceforge/{presets,cache,voices,embeddings,logs,config.toml}`, copy in built-in presets.**
 - [x] **1.3 Fix preset path: `$VOICEFORGE_HOME` → `~/.voiceforge/presets` → repo-relative fallback. Kills the `../../configs/presets` bug in `config.rs`.**
 - [x] **1.4 Wire `configs/rules/events.json` into `runner.rs` so the random-line picker actually reads it.**
-- [ ] **1.5 GitHub release automation: tagged builds for darwin-arm64/x86_64 + linux-x86_64/aarch64.**
+- [x] **1.5 GitHub release automation: tagged builds for darwin-arm64/x86_64 + linux-x86_64/aarch64.**
 - [x] **1.6 `install.sh` at repo root + served from `voiceforge.sh`: detects OS+arch, fetches binary from latest release, drops in `/usr/local/bin` or `~/.local/bin`, runs `voiceforge doctor`.** _(Builds from source until 1.5 ships releases; URL contract stays the same when binary fetch lands. `voiceforge doctor` smoke deferred to 1.7.)_
 - [x] **1.7 `voiceforge doctor`: OS, audio backend, TTS engine, cache size, server reachability. JSON mode behind `--json`.**
 - [ ] **1.8 Real Unix-socket daemon at `~/.voiceforge/voiceforge.sock` accepting `{event, message, voice}`. Replaces the heartbeat placeholder.**
