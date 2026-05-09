@@ -1,7 +1,10 @@
 # Rust
 target/
 **/*.rs.bk
-Cargo.lock
+# NOTE: Cargo.lock is intentionally COMMITTED for the apps/voiceforge-cli
+# binary crate so release builds use `--locked` (deterministic deps across
+# releases). Don't add Cargo.lock back to .gitignore. If a future addition
+# is a *library* crate, gitignore its lockfile specifically by path.
 
 # Python
 .venv/

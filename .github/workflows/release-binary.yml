@@ -1,0 +1,272 @@
+name: Release binary
+
+# Cross-builds voiceforge for darwin-arm64/x86_64 + linux-x86_64/aarch64
+# on tag push, attaches each as a release asset, and runs a smoke job
+# that downloads its own artifact and runs `voiceforge --version`.
+#
+# Tag shape: v<semver> (e.g. v0.2.0) or v<semver>-<pre> (e.g. v0.2.0-rc1).
+# Strict regex below — won't fire on branch names that happen to start with v.
+#
+# install.sh consumes the resulting tarballs at:
+#   https://github.com/humancto/voice-forge/releases/download/v<X.Y.Z>/voiceforge-<X.Y.Z>-<triple>.tar.gz
+#
+# SECURITY: every `run:` step that consumes an attacker-controlled value
+# (tag name, matrix entries, github.repository) does so via an env:
+# block, not via inline ${{ ... }}. See:
+# https://github.blog/security/vulnerability-research/how-to-catch-github-actions-workflow-injections-before-attackers-do/
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+
+permissions:
+  contents: write   # release create + asset upload
+
+jobs:
+  guard-version:
+    # Verify Cargo.toml version matches the tag base BEFORE building anything.
+    # Otherwise a v0.2.0 tag could ship a binary that reports `voiceforge 0.1.0`
+    # — silent footgun that's very hard to debug from a user report.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Cargo.toml version matches tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          tag_base="${TAG#v}"
+          tag_base="${tag_base%%-*}"   # strip -rc1 etc
+          cargo_version=$(grep -E '^version = ' apps/voiceforge-cli/Cargo.toml \
+            | head -1 | sed -E 's/.*"(.*)".*/\1/')
+          if [[ "$cargo_version" != "$tag_base" ]]; then
+            echo "::error::Cargo.toml version $cargo_version != tag base $tag_base" >&2
+            exit 1
+          fi
+          echo "Cargo.toml version $cargo_version matches tag $TAG"
+
+  build:
+    needs: guard-version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-14
+          - target: x86_64-apple-darwin
+            runner: macos-14
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04
+            cross_setup: aarch64-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust target
+        env:
+          TARGET: ${{ matrix.target }}
+        run: rustup target add "$TARGET"
+
+      - name: Linux ALSA + cross toolchain (if applicable)
+        if: runner.os == 'Linux'
+        env:
+          CROSS_SETUP: ${{ matrix.cross_setup }}
+        run: |
+          set -euo pipefail
+          if [[ "$CROSS_SETUP" == "aarch64-linux-gnu" ]]; then
+            sudo dpkg --add-architecture arm64
+            # Restrict default sources to amd64 so apt-get update doesn't
+            # try to fetch arm64 indexes from the standard Ubuntu mirrors
+            # (they don't host them). Then add a ports.ubuntu.com source
+            # explicitly for arm64.
+            sudo sed -i 's/^deb /deb [arch=amd64] /' /etc/apt/sources.list
+            sudo tee /etc/apt/sources.list.d/arm64.list > /dev/null <<EOF
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy main universe
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-updates main universe
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports jammy-security main universe
+          EOF
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends \
+              gcc-aarch64-linux-gnu \
+              libasound2-dev \
+              libasound2-dev:arm64
+          else
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends libasound2-dev
+          fi
+
+      - name: Build
+        env:
+          TARGET: ${{ matrix.target }}
+          # Cross compile linker + pkg-config for the aarch64-linux-gnu hop.
+          # No-op for native builds (env vars unused).
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          PKG_CONFIG_ALLOW_CROSS: "1"
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --target "$TARGET" \
+            --manifest-path apps/voiceforge-cli/Cargo.toml
+
+      - name: Package tarball + sha256
+        env:
+          TARGET: ${{ matrix.target }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          stage_root="$(mktemp -d)"
+          stage="$stage_root/voiceforge-${version}-${TARGET}"
+          mkdir -p "$stage"
+          cp "apps/voiceforge-cli/target/${TARGET}/release/voiceforge" "$stage/"
+          cp LICENSE "$stage/" 2>/dev/null || true
+          cp README.md "$stage/" 2>/dev/null || true
+          tarball="voiceforge-${version}-${TARGET}.tar.gz"
+          tar -czf "$tarball" -C "$stage_root" "$(basename "$stage")"
+          # GNU sha256sum format (`<hash>  <filename>`) — install.sh
+          # consumes by parsing the first whitespace-delimited token,
+          # so the format is portable across both shasum and sha256sum
+          # producers, and the consumer is shell-side compare (not -c).
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$tarball" > "${tarball}.sha256"
+          else
+            shasum -a 256 "$tarball" > "${tarball}.sha256"
+          fi
+          ls -lh "$tarball" "${tarball}.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            voiceforge-*.tar.gz
+            voiceforge-*.tar.gz.sha256
+
+  release:
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Compose release notes
+        env:
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Auto-generated body from PR titles since the previous tag.
+          # Always call generate-notes (no view fallback — that pattern
+          # silently produces an empty file when view returns empty body).
+          gh api "/repos/${REPO}/releases/generate-notes" \
+            -f tag_name="$TAG" \
+            --jq '.body' > /tmp/auto_notes.md || echo "(no auto notes)" > /tmp/auto_notes.md
+
+          # Quoted heredoc so backticks in the install snippet don't
+          # trigger command substitution. (Plan v2 review caught this.)
+          cat > /tmp/notes.md <<'EOF'
+          ## Install
+
+          ```bash
+          curl -fsSL https://raw.githubusercontent.com/humancto/voice-forge/main/install.sh | bash
+          ```
+
+          ## Platforms
+
+          | Triple | OS / libc | Notes |
+          |---|---|---|
+          | aarch64-apple-darwin | macOS 11+ | Apple Silicon |
+          | x86_64-apple-darwin | macOS 11+ | Intel — `voiceforge install-cloning` not yet supported on x86_64 (ROADMAP 2.1.1) |
+          | x86_64-unknown-linux-gnu | glibc ≥ 2.35 | Built on ubuntu-22.04 |
+          | aarch64-unknown-linux-gnu | glibc ≥ 2.35 | Built on ubuntu-22.04 with gcc-aarch64-linux-gnu |
+
+          ## Changes
+
+          EOF
+          cat /tmp/auto_notes.md >> /tmp/notes.md
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" \
+            --title "voiceforge $TAG" \
+            --notes-file /tmp/notes.md \
+            dist/voiceforge-*.tar.gz dist/voiceforge-*.tar.gz.sha256
+
+  smoke:
+    # Download our own released artifact on a clean runner per platform,
+    # tar -xzf, run `voiceforge --version`. Catches glibc / quarantine /
+    # atomic-rename regressions before users do.
+    #
+    # Coverage gap (acknowledged in plan v2): only aarch64-apple-darwin
+    # and x86_64-unknown-linux-gnu smoke-tested. The other two ship
+    # un-smoke-tested until we add macos-13 + a self-hosted aarch64-linux
+    # runner.
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-14
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-22.04
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Linux ALSA runtime (for the binary to load)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libasound2
+
+      - name: Download via gh release download
+        env:
+          TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          mkdir -p /tmp/dl
+          gh release download "$TAG" \
+            --repo "$REPO" \
+            --pattern "voiceforge-${version}-${TARGET}.*" \
+            --dir /tmp/dl
+          ls -lh /tmp/dl
+
+      - name: Verify sha256 then run
+        env:
+          TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          tarball="/tmp/dl/voiceforge-${version}-${TARGET}.tar.gz"
+          shafile="${tarball}.sha256"
+          # Cross-platform compare: both runners have one of these.
+          if command -v sha256sum >/dev/null 2>&1; then
+            actual=$(sha256sum "$tarball" | awk '{print $1}')
+          else
+            actual=$(shasum -a 256 "$tarball" | awk '{print $1}')
+          fi
+          expected=$(awk '{print $1}' "$shafile")
+          if [[ "$actual" != "$expected" ]]; then
+            echo "::error::sha256 mismatch on $tarball ($actual vs $expected)" >&2
+            exit 1
+          fi
+          tar -xzf "$tarball" -C /tmp/dl
+          binary="/tmp/dl/voiceforge-${version}-${TARGET}/voiceforge"
+          chmod 0755 "$binary"
+          "$binary" --version
