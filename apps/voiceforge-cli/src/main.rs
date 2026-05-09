@@ -13,6 +13,7 @@ mod daemon;
 mod daemon_client;
 mod daemon_server;
 mod doctor;
+mod hook;
 mod ingest;
 mod install_cloning;
 mod packs;
@@ -51,6 +52,35 @@ enum Commands {
         command: Vec<String>,
     },
     Daemon,
+    /// Read NDJSON events from stdin, forward each to the daemon.
+    /// Designed for AI-agent integrations (Claude Code, Cursor, etc.)
+    /// that emit one JSON object per line. Use `--profile claude-code`
+    /// for the Claude Code hook payload schema. Distinct from
+    /// `voiceforge ingest` (audio) and `voiceforge send` (single-frame).
+    Hook {
+        /// Pull the event name from a dotted JSON path
+        /// (e.g. `hook.event_name`).
+        #[arg(long)]
+        event_from: Option<String>,
+        /// Pull the message from a dotted JSON path. Default: forward
+        /// the whole line (capped at 4 KiB).
+        #[arg(long)]
+        message_from: Option<String>,
+        /// Override per-frame voice for the whole stream.
+        #[arg(long)]
+        voice: Option<String>,
+        /// Use a known upstream's field layout. Supported: `claude-code`.
+        /// Mutually exclusive with --event-from / --message-from.
+        #[arg(long, conflicts_with_all = ["event_from", "message_from"])]
+        profile: Option<String>,
+        /// Re-emit each input line on stdout BEFORE forwarding (so a
+        /// downstream `jq` or `tee` doesn't block on a hung daemon).
+        #[arg(long)]
+        passthrough: bool,
+        /// Suppress per-frame stderr warnings.
+        #[arg(long)]
+        quiet: bool,
+    },
     /// Print or install zsh / bash hook scripts that fire
     /// command_succeeded / command_failed daemon events for commands
     /// over a configurable threshold (default 3 s, env override
@@ -274,6 +304,18 @@ async fn main() -> Result<()> {
             force,
         } => {
             let exit_code = run_shell_init(shell, install, uninstall, status, force);
+            std::process::exit(exit_code);
+        }
+        Commands::Hook {
+            event_from,
+            message_from,
+            voice,
+            profile,
+            passthrough,
+            quiet,
+        } => {
+            let exit_code =
+                run_hook(event_from, message_from, voice, profile, passthrough, quiet).await;
             std::process::exit(exit_code);
         }
         Commands::Voices { action } => match action {
@@ -623,6 +665,69 @@ async fn run_send(
             4
         }
     }
+}
+
+/// `voiceforge hook` dispatcher. Returns the process exit code.
+async fn run_hook(
+    event_from: Option<String>,
+    message_from: Option<String>,
+    voice: Option<String>,
+    profile: Option<String>,
+    passthrough: bool,
+    quiet: bool,
+) -> i32 {
+    if let Some(p) = &profile {
+        if let Err(e) = hook::validate_profile(p) {
+            eprintln!("voiceforge hook: {e:#}");
+            return 3;
+        }
+    }
+
+    let socket_path = match daemon_server::DaemonConfig::default_path() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("voiceforge hook: {e:#}");
+            return 2;
+        }
+    };
+
+    let connect_timeout = duration_env("VOICEFORGE_SEND_TIMEOUT_MS", 1000, 50, 30_000);
+    let read_timeout = duration_env("VOICEFORGE_SEND_READ_TIMEOUT_MS", 5000, 100, 60_000);
+    let fail_window = u64_env("VOICEFORGE_HOOK_FAIL_WINDOW", 100, 1, 10_000) as usize;
+    let fail_min = u64_env("VOICEFORGE_HOOK_FAIL_MIN", 10, 1, 10_000) as usize;
+    let fail_ratio = f64_env("VOICEFORGE_HOOK_FAIL_RATIO", 0.5, 0.0, 1.0);
+
+    let cfg = hook::HookConfig {
+        event_from,
+        message_from,
+        voice,
+        profile,
+        passthrough,
+        quiet,
+        fail_ratio,
+        fail_window,
+        fail_min,
+        connect_timeout,
+        read_timeout,
+    };
+
+    hook::run(cfg, &socket_path).await
+}
+
+fn u64_env(key: &str, default: u64, min: u64, max: u64) -> u64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(|n| n.clamp(min, max))
+        .unwrap_or(default)
+}
+
+fn f64_env(key: &str, default: f64, min: f64, max: f64) -> f64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .map(|n| n.clamp(min, max))
+        .unwrap_or(default)
 }
 
 /// `voiceforge shell-init` dispatcher. Returns the process exit code.
