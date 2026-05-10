@@ -10,11 +10,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-/// Sentinels delimit the voiceforge-managed block in the rc file.
-/// Exact strings — no regex parsing. Re-running install replaces the
-/// block contents while preserving everything outside.
-pub const SENTINEL_OPEN: &str = "# >>> voiceforge >>>";
-pub const SENTINEL_CLOSE: &str = "# <<< voiceforge <<<";
+use crate::sentinel::{self, BlockAction, SENTINEL_CLOSE, SENTINEL_OPEN};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shell {
@@ -213,11 +209,9 @@ trap '__voiceforge_preexec' DEBUG\n\
 
 // -- install / uninstall / status -------------------------------------
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum InstallAction {
-    Created,
-    Replaced,
-}
+/// Re-exported from `sentinel` so existing call sites (and the
+/// existing test suite) keep their `InstallAction` import path intact.
+pub type InstallAction = BlockAction;
 
 #[derive(Debug)]
 pub struct InstallReport {
@@ -245,103 +239,10 @@ pub struct ShellStatus {
 }
 
 /// Look for any `voiceforge shell-init` invocation OUTSIDE the
-/// sentinel-delimited block. A user with a stale invocation in their
-/// rc would otherwise end up with two hook installations — silent
-/// double-firing. We refuse without `--force` and print the offending
-/// line so they can audit.
-fn find_stale_invocation(content: &str) -> Option<(usize, String)> {
-    let mut in_sentinel = false;
-    for (lineno, line) in content.lines().enumerate() {
-        if line.trim() == SENTINEL_OPEN {
-            in_sentinel = true;
-            continue;
-        }
-        if line.trim() == SENTINEL_CLOSE {
-            in_sentinel = false;
-            continue;
-        }
-        if in_sentinel {
-            continue;
-        }
-        let trimmed = line.trim_start();
-        if trimmed.starts_with('#') {
-            continue;
-        }
-        if trimmed.contains("voiceforge") && trimmed.contains("shell-init") {
-            return Some((lineno + 1, line.to_string()));
-        }
-    }
-    None
-}
-
-fn replace_or_append_block(content: &str, block: &str) -> (String, InstallAction) {
-    let lines: Vec<&str> = content.lines().collect();
-    let open_idx = lines.iter().position(|l| l.trim() == SENTINEL_OPEN);
-    let close_idx = lines.iter().position(|l| l.trim() == SENTINEL_CLOSE);
-
-    match (open_idx, close_idx) {
-        (Some(open), Some(close)) if close >= open => {
-            let mut out = String::new();
-            for (i, line) in lines.iter().enumerate() {
-                if i < open || i > close {
-                    out.push_str(line);
-                    out.push('\n');
-                }
-                if i == open {
-                    out.push_str(block);
-                    if !block.ends_with('\n') {
-                        out.push('\n');
-                    }
-                }
-            }
-            if !content.ends_with('\n') && out.ends_with('\n') {
-                out.pop();
-            }
-            (out, InstallAction::Replaced)
-        }
-        _ => {
-            let mut out = content.to_string();
-            if !out.is_empty() && !out.ends_with("\n\n") {
-                if !out.ends_with('\n') {
-                    out.push('\n');
-                }
-                out.push('\n');
-            }
-            out.push_str(block);
-            if !block.ends_with('\n') {
-                out.push('\n');
-            }
-            (out, InstallAction::Created)
-        }
-    }
-}
-
-fn strip_block(content: &str) -> (String, bool) {
-    let lines: Vec<&str> = content.lines().collect();
-    let open_idx = lines.iter().position(|l| l.trim() == SENTINEL_OPEN);
-    let close_idx = lines.iter().position(|l| l.trim() == SENTINEL_CLOSE);
-
-    match (open_idx, close_idx) {
-        (Some(open), Some(close)) if close >= open => {
-            let mut out: Vec<&str> = Vec::with_capacity(lines.len());
-            let drop_trailing_blank = lines.get(close + 1).is_some_and(|l| l.trim().is_empty());
-            for (i, line) in lines.iter().enumerate() {
-                if i >= open && i <= close {
-                    continue;
-                }
-                if drop_trailing_blank && i == close + 1 {
-                    continue;
-                }
-                out.push(line);
-            }
-            let mut joined = out.join("\n");
-            if content.ends_with('\n') {
-                joined.push('\n');
-            }
-            (joined, true)
-        }
-        _ => (content.to_string(), false),
-    }
+/// Predicate for a stale `voiceforge shell-init` invocation outside
+/// any sentinel block — fed into `sentinel::find_stale_invocation`.
+fn is_stale_shell_init(trimmed_line: &str) -> bool {
+    trimmed_line.contains("voiceforge") && trimmed_line.contains("shell-init")
 }
 
 pub fn install(
@@ -352,7 +253,7 @@ pub fn install(
 ) -> Result<InstallReport> {
     let content = std::fs::read_to_string(rc_path).unwrap_or_default();
 
-    if let Some((lineno, line)) = find_stale_invocation(&content) {
+    if let Some((lineno, line)) = sentinel::find_stale_invocation(&content, is_stale_shell_init) {
         if !force {
             bail!(
                 "{}:{lineno}: found a stale `voiceforge shell-init` invocation outside the managed block:\n  {}\n\nRe-running install would result in the hook firing twice. Either:\n  1. Remove the stale line by hand, or\n  2. Re-run with --force to install anyway (the stale line will keep firing)",
@@ -363,7 +264,7 @@ pub fn install(
     }
 
     let block = render_hook(shell, hint);
-    let (new_content, action) = replace_or_append_block(&content, &block);
+    let (new_content, action) = sentinel::replace_or_append_block(&content, &block);
 
     if let Some(parent) = rc_path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -392,7 +293,7 @@ pub fn uninstall(rc_path: &Path) -> Result<UninstallReport> {
         Err(e) => return Err(anyhow!("reading {}: {e}", rc_path.display())),
     };
 
-    let (new_content, was_present) = strip_block(&content);
+    let (new_content, was_present) = sentinel::strip_block(&content);
     if was_present {
         std::fs::write(rc_path, new_content)
             .with_context(|| format!("writing {}", rc_path.display()))?;

@@ -20,6 +20,7 @@ mod packs;
 mod paths;
 mod rules;
 mod runner;
+mod sentinel;
 mod shell_init;
 mod tts;
 mod url_ingest;
