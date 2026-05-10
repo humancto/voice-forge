@@ -35,7 +35,15 @@ use std::sync::{Arc, OnceLock};
 /// Object-safe bridge between `process_frame` and the actual notification
 /// implementation. `mirror()` MUST NOT block — implementations either
 /// spawn-and-detach or return immediately.
+///
+/// **Runtime requirement:** some implementations (notably
+/// `OsascriptMirror`) require a Tokio runtime context. Today the only
+/// call site is the daemon's `process_frame`, which is always polled
+/// inside the daemon's runtime. Future call sites must respect this.
 pub(crate) trait Mirror: Send + Sync {
+    /// Best-effort mirror of `(voice, text)` to a platform notification.
+    /// Implementations MUST NOT block. Failures are logged, not
+    /// returned.
     fn mirror(&self, voice: &str, text: &str);
 }
 
@@ -44,6 +52,11 @@ pub(crate) trait Mirror: Send + Sync {
 pub(crate) struct OsascriptMirror;
 
 impl Mirror for OsascriptMirror {
+    /// # Panics
+    ///
+    /// On macOS: panics if called outside a Tokio runtime context
+    /// (uses `tokio::process::Command::spawn` and `tokio::spawn`).
+    /// Daemon's `process_frame` always satisfies this.
     fn mirror(&self, voice: &str, text: &str) {
         if !enabled() {
             return;
@@ -117,6 +130,9 @@ pub(crate) fn escape_for_applescript(s: &str) -> String {
     out
 }
 
+#[cfg(any(target_os = "macos", test))]
+const MAX_BODY_BYTES: usize = 240;
+
 /// Cap the body to 240 bytes (Notification Center truncates around 256;
 /// 240 leaves headroom for the title + AppleScript wrapper). Reuses
 /// `watch::truncate_to_bytes` so the binary has one canonical truncator.
@@ -124,9 +140,6 @@ pub(crate) fn escape_for_applescript(s: &str) -> String {
 pub(crate) fn truncate_body(s: &str) -> String {
     crate::watch::truncate_to_bytes(s, MAX_BODY_BYTES)
 }
-
-#[cfg(any(target_os = "macos", test))]
-const MAX_BODY_BYTES: usize = 240;
 
 /// Build the AppleScript source. Pure — no side effects, used in tests.
 #[cfg(any(target_os = "macos", test))]
@@ -233,10 +246,8 @@ mod tests {
         // Attacker tries to terminate the body string and inject script.
         let evil = r#"" with title "PWNED"#;
         let out = escape_for_applescript(evil);
-        // The closing `"` after `body` must be escaped; no unescaped
-        // double-quote may appear in the output.
-        assert!(!out.contains('"') || out.matches('"').all(|_| true));
-        // More precisely: every `"` in the output must be preceded by `\`.
+        // Every `"` in the output must be preceded by `\` (i.e. inside
+        // a string literal, no escape can re-open the string).
         let bytes = out.as_bytes();
         for (i, &b) in bytes.iter().enumerate() {
             if b == b'"' {
@@ -297,7 +308,10 @@ mod tests {
     #[test]
     fn build_script_includes_title_and_body_escaped() {
         let s = build_script("peter", r#"build "failed""#);
-        assert!(s.contains(r"voiceforge \u{00B7}") || s.contains("voiceforge"));
+        // Title must contain the literal middle-dot byte sequence and
+        // the voice name (we render `voiceforge · peter`).
+        assert!(s.contains("voiceforge \u{00B7} peter"), "title missing: {s:?}");
+        // Body must have the inner double-quotes escaped.
         assert!(s.contains(r#"build \"failed\""#));
         // No raw double-quote inside the body or title.
         // (The outer wrapper has exactly 4 unescaped `"`s.)
