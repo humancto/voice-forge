@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use crate::audio_sink::{AudioSink, RodioSink};
 use crate::daemon_server::{serve, DaemonConfig};
+use crate::notify_macos;
 use crate::rules::{resolve_rules_path, Rules};
 use crate::tts;
 
@@ -22,6 +23,7 @@ pub async fn run() -> Result<()> {
             .unwrap_or_else(Rules::default_builtin),
     );
     let sink: Arc<dyn AudioSink> = Arc::new(RodioSink);
+    let mirror = notify_macos::default_mirror();
 
-    serve(cfg, engine, rules, sink).await
+    serve(cfg, engine, rules, sink, mirror).await
 }

@@ -66,6 +66,7 @@ pub async fn run_doctor() -> DoctorReport {
     checks.push(check_yt_dlp().await);
     checks.push(check_cloning());
     checks.push(check_daemon_socket().await);
+    checks.push(check_notification_bridge());
 
     DoctorReport {
         schema_version: SCHEMA_VERSION,
@@ -310,6 +311,33 @@ async fn check_daemon_socket() -> Check {
             format!("probe failed at {}: {e:#}", path.display()),
         ),
     }
+}
+
+/// ROADMAP 3.5: macOS Notification Center bridge.
+///
+/// On macOS, reports whether `osascript` is on PATH and whether the
+/// `VOICEFORGE_MIRROR_NOTIFICATIONS` env var is set. On other
+/// platforms, reports "not applicable".
+fn check_notification_bridge() -> Check {
+    if !cfg!(target_os = "macos") {
+        return ok("notification bridge", "not applicable on this platform");
+    }
+    let env_state = std::env::var("VOICEFORGE_MIRROR_NOTIFICATIONS")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .map(|v| format!("set to {v:?}"))
+        .unwrap_or_else(|| "unset (mirroring off)".to_string());
+    let osascript_present = which::which("osascript").is_ok();
+    if !osascript_present {
+        return warn(
+            "notification bridge",
+            format!("osascript not on PATH; env: {env_state}"),
+        );
+    }
+    ok(
+        "notification bridge",
+        format!("osascript on PATH; env: {env_state}"),
+    )
 }
 
 fn check_cloning() -> Check {

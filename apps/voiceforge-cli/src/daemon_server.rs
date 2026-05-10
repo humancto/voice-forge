@@ -30,6 +30,7 @@ use tokio::signal::unix::{signal as unix_signal, SignalKind};
 use tokio::sync::Semaphore;
 
 use crate::audio_sink::AudioSink;
+use crate::notify_macos::Mirror;
 use crate::rules::{choose_reaction, Rules};
 use crate::tts::Engine;
 
@@ -134,6 +135,7 @@ pub async fn serve(
     engine: Arc<Engine>,
     rules: Arc<Rules>,
     sink: Arc<dyn AudioSink>,
+    mirror: Arc<dyn Mirror>,
 ) -> Result<()> {
     // Stale-socket detect.
     if cfg.socket_path.exists() {
@@ -215,8 +217,9 @@ pub async fn serve(
                 let engine = Arc::clone(&engine);
                 let rules = Arc::clone(&rules);
                 let sink = Arc::clone(&sink);
+                let mirror = Arc::clone(&mirror);
                 let semaphore = Arc::clone(&semaphore);
-                tokio::spawn(handle_connection(stream, engine, rules, sink, semaphore));
+                tokio::spawn(handle_connection(stream, engine, rules, sink, mirror, semaphore));
             }
             _ = signal::ctrl_c() => {
                 eprintln!("voiceforge daemon: ctrl_c received, shutting down");
@@ -240,6 +243,7 @@ async fn handle_connection(
     engine: Arc<Engine>,
     rules: Arc<Rules>,
     sink: Arc<dyn AudioSink>,
+    mirror: Arc<dyn Mirror>,
     semaphore: Arc<Semaphore>,
 ) {
     let (read_half, mut write_half) = stream.into_split();
@@ -282,7 +286,7 @@ async fn handle_connection(
             continue; // ignore blank lines
         }
 
-        let reply = match process_frame(&buf, &engine, &rules, &sink, &semaphore).await {
+        let reply = match process_frame(&buf, &engine, &rules, &sink, &mirror, &semaphore).await {
             Ok(r) => r,
             Err(e) => Reply::err(format!("{e:#}")),
         };
@@ -300,12 +304,19 @@ async fn process_frame(
     engine: &Arc<Engine>,
     rules: &Arc<Rules>,
     sink: &Arc<dyn AudioSink>,
+    mirror: &Arc<dyn Mirror>,
     semaphore: &Arc<Semaphore>,
 ) -> Result<Reply> {
     let frame: Frame =
         serde_json::from_slice(raw).context("frame is not valid JSON matching the schema")?;
 
     let (text, voice) = resolve_text_and_voice(&frame, rules)?;
+
+    // Mirror the line as a macOS Notification Center banner BEFORE
+    // synthesis so the visual lands at audio-start, not 200-800 ms
+    // later. `mirror.mirror` self-checks `enabled()` and is a cheap
+    // no-op when off; non-macOS builds compile to a no-op too.
+    mirror.mirror(/* voice */ &voice, /* text */ &text);
 
     // Acquire the permit BEFORE synthesis so a flood doesn't queue up
     // unbounded synthesis work either.
@@ -438,17 +449,38 @@ pub(crate) mod test_support {
         (cfg, engine, rules, sink)
     }
 
-    /// Spawn `serve` on a tokio task and wait until the socket file
-    /// exists (bind succeeded). Returns the join handle so the test
-    /// can drop it / abort it cleanly.
+    /// Spawn `serve` on a tokio task with the default (production)
+    /// mirror. The default mirror is `OsascriptMirror`, which is a
+    /// no-op when `VOICEFORGE_MIRROR_NOTIFICATIONS` is unset and on
+    /// non-macOS platforms — so existing tests are unaffected.
     pub(crate) async fn spawn_serve(
         cfg: DaemonConfig,
         engine: Arc<Engine>,
         rules: Arc<Rules>,
         sink: Arc<dyn AudioSink>,
     ) -> tokio::task::JoinHandle<Result<()>> {
+        spawn_serve_with_mirror(
+            cfg,
+            engine,
+            rules,
+            sink,
+            crate::notify_macos::default_mirror(),
+        )
+        .await
+    }
+
+    /// Like `spawn_serve`, but lets the test inject its own
+    /// `Arc<dyn Mirror>` (e.g. a `RecordingMirror` to assert the
+    /// daemon called the bridge with the right args).
+    pub(crate) async fn spawn_serve_with_mirror(
+        cfg: DaemonConfig,
+        engine: Arc<Engine>,
+        rules: Arc<Rules>,
+        sink: Arc<dyn AudioSink>,
+        mirror: Arc<dyn Mirror>,
+    ) -> tokio::task::JoinHandle<Result<()>> {
         let socket_path = cfg.socket_path.clone();
-        let handle = tokio::spawn(async move { serve(cfg, engine, rules, sink).await });
+        let handle = tokio::spawn(async move { serve(cfg, engine, rules, sink, mirror).await });
         // Wait for bind. Tight bound — this is a local socket on the same FS.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         while tokio::time::Instant::now() < deadline {
@@ -578,7 +610,14 @@ mod tests {
         .await;
 
         // Try a second serve on the same path.
-        let result = serve(cfg, engine, rules, sink as Arc<dyn AudioSink>).await;
+        let result = serve(
+            cfg,
+            engine,
+            rules,
+            sink as Arc<dyn AudioSink>,
+            crate::notify_macos::default_mirror(),
+        )
+        .await;
         assert!(result.is_err(), "second daemon must refuse to bind");
         let msg = format!("{:#}", result.unwrap_err());
         assert!(
@@ -754,6 +793,63 @@ mod tests {
         let reply: Value = serde_json::from_str(line.trim()).expect("parse");
         assert_eq!(reply["ok"], Value::Bool(true));
         assert_eq!(reply["spoken"], "hello");
+        handle.abort();
+    }
+
+    // ROADMAP 3.5: prove the daemon hands every spoken (voice, text)
+    // pair to the injected `Mirror`. Uses `RecordingMirror` so we don't
+    // care whether `osascript` exists or what env vars are set —
+    // straight assertion on the call surface.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn serve_calls_mirror_for_each_spoken_line() {
+        use crate::notify_macos::test_support::RecordingMirror;
+        use crate::notify_macos::Mirror;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (cfg, engine, rules, sink) = fixture(tmp.path());
+        let socket = cfg.socket_path.clone();
+        let recorder: Arc<RecordingMirror> = Arc::new(RecordingMirror::default());
+        let mirror: Arc<dyn Mirror> = recorder.clone();
+
+        let handle = spawn_serve_with_mirror(
+            cfg,
+            engine,
+            rules,
+            sink.clone() as Arc<dyn AudioSink>,
+            mirror,
+        )
+        .await;
+
+        // text-only frame: voice defaults to "default", text is verbatim.
+        let reply = send_one(&socket, r#"{"text":"hello world","voice":"peter"}"#).await;
+        assert_eq!(reply["ok"], Value::Bool(true));
+
+        // event frame: voice + text resolved from rules.
+        let reply2 = send_one(&socket, r#"{"event":"build_failed"}"#).await;
+        assert_eq!(reply2["ok"], Value::Bool(true));
+
+        // Give the handler tasks a moment to flush.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let calls = recorder.calls();
+        assert_eq!(
+            calls.len(),
+            2,
+            "expected exactly 2 mirror calls, got {calls:?}"
+        );
+        assert_eq!(calls[0], ("peter".to_string(), "hello world".to_string()));
+        assert_eq!(calls[1].0, "angry_duck", "build_failed → angry_duck voice");
+        assert!(
+            [
+                "The build failed again.",
+                "That did not go well.",
+                "The compiler has chosen violence."
+            ]
+            .contains(&calls[1].1.as_str()),
+            "unexpected text: {:?}",
+            calls[1].1,
+        );
+
         handle.abort();
     }
 }
