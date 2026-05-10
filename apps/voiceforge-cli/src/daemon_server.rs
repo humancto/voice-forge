@@ -31,7 +31,9 @@ use tokio::sync::Semaphore;
 
 use crate::audio_sink::AudioSink;
 use crate::notify_macos::Mirror;
-use crate::rules::{choose_reaction, Rules};
+use crate::reaction::ReactionProvider;
+#[cfg(test)]
+use crate::rules::Rules;
 use crate::tts::Engine;
 
 /// Shared between the daemon's stale-socket detect and the doctor's
@@ -133,7 +135,7 @@ pub(crate) async fn probe_socket(path: &Path) -> Result<bool> {
 pub async fn serve(
     cfg: DaemonConfig,
     engine: Arc<Engine>,
-    rules: Arc<Rules>,
+    provider: Arc<dyn ReactionProvider>,
     sink: Arc<dyn AudioSink>,
     mirror: Arc<dyn Mirror>,
 ) -> Result<()> {
@@ -215,11 +217,13 @@ pub async fn serve(
                     }
                 };
                 let engine = Arc::clone(&engine);
-                let rules = Arc::clone(&rules);
+                let provider = Arc::clone(&provider);
                 let sink = Arc::clone(&sink);
                 let mirror = Arc::clone(&mirror);
                 let semaphore = Arc::clone(&semaphore);
-                tokio::spawn(handle_connection(stream, engine, rules, sink, mirror, semaphore));
+                tokio::spawn(handle_connection(
+                    stream, engine, provider, sink, mirror, semaphore,
+                ));
             }
             _ = signal::ctrl_c() => {
                 eprintln!("voiceforge daemon: ctrl_c received, shutting down");
@@ -241,7 +245,7 @@ pub async fn serve(
 async fn handle_connection(
     stream: UnixStream,
     engine: Arc<Engine>,
-    rules: Arc<Rules>,
+    provider: Arc<dyn ReactionProvider>,
     sink: Arc<dyn AudioSink>,
     mirror: Arc<dyn Mirror>,
     semaphore: Arc<Semaphore>,
@@ -286,7 +290,8 @@ async fn handle_connection(
             continue; // ignore blank lines
         }
 
-        let reply = match process_frame(&buf, &engine, &rules, &sink, &mirror, &semaphore).await {
+        let reply = match process_frame(&buf, &engine, &provider, &sink, &mirror, &semaphore).await
+        {
             Ok(r) => r,
             Err(e) => Reply::err(format!("{e:#}")),
         };
@@ -302,7 +307,7 @@ async fn handle_connection(
 async fn process_frame(
     raw: &[u8],
     engine: &Arc<Engine>,
-    rules: &Arc<Rules>,
+    provider: &Arc<dyn ReactionProvider>,
     sink: &Arc<dyn AudioSink>,
     mirror: &Arc<dyn Mirror>,
     semaphore: &Arc<Semaphore>,
@@ -310,7 +315,7 @@ async fn process_frame(
     let frame: Frame =
         serde_json::from_slice(raw).context("frame is not valid JSON matching the schema")?;
 
-    let (text, voice) = resolve_text_and_voice(&frame, rules)?;
+    let (text, voice) = resolve_text_and_voice(&frame, provider).await?;
 
     // Mirror the line as a macOS Notification Center banner BEFORE
     // synthesis so the visual lands at audio-start, not 200-800 ms
@@ -346,11 +351,16 @@ async fn process_frame(
 /// Pick the (text, voice) pair to actually speak based on the request:
 ///
 /// 1. If `text` is set in the request, use it verbatim. Voice = request
-///    voice if set, else "default".
-/// 2. Else if `event` is set, dispatch through `rules`. Voice override
-///    in the request still wins over the rule's voice.
+///    voice if set, else "default". Provider is NOT consulted — text
+///    frames always bypass the reaction provider.
+/// 2. Else if `event` is set, dispatch through `provider.react(event)`.
+///    Provider may be Static (rules.json) or Llm (4.1). Voice override
+///    in the request still wins over whatever the provider returned.
 /// 3. Else error: neither field present.
-fn resolve_text_and_voice(frame: &Frame, rules: &Arc<Rules>) -> Result<(String, String)> {
+async fn resolve_text_and_voice(
+    frame: &Frame,
+    provider: &Arc<dyn ReactionProvider>,
+) -> Result<(String, String)> {
     if let Some(text) = frame.text.as_deref() {
         let voice = frame.voice.clone().unwrap_or_else(|| "default".to_string());
         return Ok((text.to_string(), voice));
@@ -361,13 +371,8 @@ fn resolve_text_and_voice(frame: &Frame, rules: &Arc<Rules>) -> Result<(String, 
         .as_deref()
         .ok_or_else(|| anyhow!("frame must contain either \"event\" or \"text\""))?;
 
-    let mut rng = rand::thread_rng();
-    let fallback_voice = "default";
-    let fallback_text = "Event received.";
-    let (rule_voice, text) =
-        choose_reaction(rules, event, (fallback_voice, fallback_text), &mut rng);
-
-    let voice = frame.voice.clone().unwrap_or(rule_voice);
+    let (provider_voice, text) = provider.react(event).await;
+    let voice = frame.voice.clone().unwrap_or(provider_voice);
     Ok((text, voice))
 }
 
@@ -459,10 +464,12 @@ pub(crate) mod test_support {
         rules: Arc<Rules>,
         sink: Arc<dyn AudioSink>,
     ) -> tokio::task::JoinHandle<Result<()>> {
-        spawn_serve_with_mirror(
+        let provider: Arc<dyn ReactionProvider> =
+            Arc::new(crate::reaction::StaticProvider::new(rules));
+        spawn_serve_with_provider(
             cfg,
             engine,
-            rules,
+            provider,
             sink,
             crate::notify_macos::default_mirror(),
         )
@@ -479,9 +486,25 @@ pub(crate) mod test_support {
         sink: Arc<dyn AudioSink>,
         mirror: Arc<dyn Mirror>,
     ) -> tokio::task::JoinHandle<Result<()>> {
+        let provider: Arc<dyn ReactionProvider> =
+            Arc::new(crate::reaction::StaticProvider::new(rules));
+        spawn_serve_with_provider(cfg, engine, provider, sink, mirror).await
+    }
+
+    /// Full-control spawn: caller supplies the `Arc<dyn ReactionProvider>`
+    /// (e.g. a `RecordingProvider` to assert the daemon dispatched
+    /// through the trait, or a real `LlmProvider` for end-to-end tests).
+    /// Used by ROADMAP 4.1 daemon integration tests.
+    pub(crate) async fn spawn_serve_with_provider(
+        cfg: DaemonConfig,
+        engine: Arc<Engine>,
+        provider: Arc<dyn ReactionProvider>,
+        sink: Arc<dyn AudioSink>,
+        mirror: Arc<dyn Mirror>,
+    ) -> tokio::task::JoinHandle<Result<()>> {
         let socket_path = cfg.socket_path.clone();
-        let handle = tokio::spawn(async move { serve(cfg, engine, rules, sink, mirror).await });
-        // Wait for bind. Tight bound — this is a local socket on the same FS.
+        let handle = tokio::spawn(async move { serve(cfg, engine, provider, sink, mirror).await });
+        // Wait for bind. Tight bound; local socket on the same FS.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         while tokio::time::Instant::now() < deadline {
             if probe_socket(&socket_path).await.unwrap_or(false) {
@@ -610,10 +633,12 @@ mod tests {
         .await;
 
         // Try a second serve on the same path.
+        let provider2: Arc<dyn ReactionProvider> =
+            Arc::new(crate::reaction::StaticProvider::new(rules));
         let result = serve(
             cfg,
             engine,
-            rules,
+            provider2,
             sink as Arc<dyn AudioSink>,
             crate::notify_macos::default_mirror(),
         )
@@ -848,6 +873,84 @@ mod tests {
             .contains(&calls[1].1.as_str()),
             "unexpected text: {:?}",
             calls[1].1,
+        );
+
+        handle.abort();
+    }
+
+    // ROADMAP 4.1: prove process_frame's event branch dispatches through
+    // the injected `Arc<dyn ReactionProvider>`, NOT through rules.json.
+    // Uses `RecordingProvider` to return a deterministic (voice, line)
+    // and asserts the daemon spoke exactly that pair.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn serve_dispatches_event_frame_through_provider() {
+        use crate::reaction::test_support::RecordingProvider;
+        use crate::reaction::ReactionProvider;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (cfg, engine, _rules, sink) = fixture(tmp.path());
+        let socket = cfg.socket_path.clone();
+        let recorder: Arc<RecordingProvider> = Arc::new(RecordingProvider::new(
+            "synthetic_voice",
+            "synthetic line under test",
+        ));
+        let provider: Arc<dyn ReactionProvider> = recorder.clone();
+
+        let handle = spawn_serve_with_provider(
+            cfg,
+            engine,
+            provider,
+            sink.clone() as Arc<dyn AudioSink>,
+            crate::notify_macos::default_mirror(),
+        )
+        .await;
+
+        let reply = send_one(&socket, r#"{"event":"build_failed"}"#).await;
+        assert_eq!(reply["ok"], Value::Bool(true));
+        assert_eq!(reply["spoken"], "synthetic line under test");
+        assert_eq!(reply["voice"], "synthetic_voice");
+
+        // Provider was called with the exact event id, not the resolved
+        // text-or-voice.
+        let events = recorder.events();
+        assert_eq!(events, vec!["build_failed".to_string()]);
+
+        handle.abort();
+    }
+
+    // ROADMAP 4.1: text-only frames must BYPASS the provider — text is
+    // verbatim, voice is "default" (or the request override).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn serve_text_only_frame_bypasses_provider() {
+        use crate::reaction::test_support::RecordingProvider;
+        use crate::reaction::ReactionProvider;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (cfg, engine, _rules, sink) = fixture(tmp.path());
+        let socket = cfg.socket_path.clone();
+        let recorder: Arc<RecordingProvider> =
+            Arc::new(RecordingProvider::new("ignored", "ignored"));
+        let provider: Arc<dyn ReactionProvider> = recorder.clone();
+
+        let handle = spawn_serve_with_provider(
+            cfg,
+            engine,
+            provider,
+            sink.clone() as Arc<dyn AudioSink>,
+            crate::notify_macos::default_mirror(),
+        )
+        .await;
+
+        let reply = send_one(&socket, r#"{"text":"hello world","voice":"peter"}"#).await;
+        assert_eq!(reply["ok"], Value::Bool(true));
+        assert_eq!(reply["spoken"], "hello world");
+        assert_eq!(reply["voice"], "peter");
+
+        // Provider was NOT called.
+        assert!(
+            recorder.events().is_empty(),
+            "text frames must not call the reaction provider; got: {:?}",
+            recorder.events()
         );
 
         handle.abort();

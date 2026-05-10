@@ -20,6 +20,7 @@ mod install_cloning;
 mod notify_macos;
 mod packs;
 mod paths;
+mod reaction;
 mod rules;
 mod runner;
 mod sentinel;

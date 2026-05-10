@@ -80,6 +80,21 @@ impl Rules {
     pub fn contains(&self, event: &str) -> bool {
         self.0.contains_key(event)
     }
+
+    /// All distinct voice names referenced by the loaded rules. Used by
+    /// `reaction::LlmProvider` to populate the LLM's voice menu
+    /// (ROADMAP 4.1).
+    pub fn voices(&self) -> Vec<String> {
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut out: Vec<String> = Vec::new();
+        for rule in self.0.values() {
+            if seen.insert(rule.voice.as_str()) {
+                out.push(rule.voice.clone());
+            }
+        }
+        out.sort();
+        out
+    }
 }
 
 /// Resolve which rules file to load, in order:

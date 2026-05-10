@@ -67,6 +67,7 @@ pub async fn run_doctor() -> DoctorReport {
     checks.push(check_cloning());
     checks.push(check_daemon_socket().await);
     checks.push(check_notification_bridge());
+    checks.push(check_reaction_provider().await);
 
     DoctorReport {
         schema_version: SCHEMA_VERSION,
@@ -338,6 +339,87 @@ fn check_notification_bridge() -> Check {
         "notification bridge",
         format!("osascript on PATH; env: {env_state}"),
     )
+}
+
+/// ROADMAP 4.1: report active reaction provider + LLM endpoint state.
+///
+/// Probes only TCP+TLS reachability of `VOICEFORGE_LLM_URL` (no chat
+/// completion call — would cost tokens and might be slow). Reports
+/// active provider name + timeout + strict mode.
+async fn check_reaction_provider() -> Check {
+    // Construct the actual prod provider so `name()` reflects what
+    // the daemon would use. Cheap — no network call here.
+    use std::sync::Arc;
+    let rules = Arc::new(crate::rules::Rules::default_builtin());
+    let provider = crate::reaction::select_provider(Arc::clone(&rules));
+    let provider_name = provider.name();
+
+    let url = std::env::var("VOICEFORGE_LLM_URL")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+
+    let Some(url) = url else {
+        return ok("reaction provider", format!("{provider_name} (rules.json)"));
+    };
+
+    let timeout_ms = std::env::var("VOICEFORGE_LLM_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(2000);
+    let strict = matches!(
+        std::env::var("VOICEFORGE_LLM_STRICT").as_deref(),
+        Ok("1") | Ok("true") | Ok("yes") | Ok("on")
+    );
+    let has_api_key = std::env::var("VOICEFORGE_LLM_API_KEY")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .is_some()
+        || std::env::var("OPENAI_API_KEY")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .is_some();
+
+    let parsed = match reqwest::Url::parse(&url) {
+        Ok(u) => u,
+        Err(e) => {
+            return warn(
+                "reaction provider",
+                format!(
+                    "llm{} ({}ms timeout, key={}); URL unparseable: {e}",
+                    if strict { "-strict" } else { "" },
+                    timeout_ms,
+                    if has_api_key { "set" } else { "unset" }
+                ),
+            );
+        }
+    };
+
+    let host = parsed.host_str().unwrap_or("?");
+    let port = parsed.port_or_known_default().unwrap_or(0);
+    let reachable = tokio::time::timeout(
+        std::time::Duration::from_millis(1000),
+        tokio::net::TcpStream::connect(format!("{host}:{port}")),
+    )
+    .await
+    .ok()
+    .and_then(|r| r.ok())
+    .is_some();
+
+    let detail = format!(
+        "{provider_name} -> {host}:{port} ({}ms timeout, key={}, host {})",
+        timeout_ms,
+        if has_api_key { "set" } else { "unset" },
+        if reachable {
+            "reachable"
+        } else {
+            "UNREACHABLE"
+        },
+    );
+    if reachable {
+        ok("reaction provider", detail)
+    } else {
+        warn("reaction provider", detail)
+    }
 }
 
 fn check_cloning() -> Check {
