@@ -12,6 +12,16 @@ pub struct IngestConfig {
     pub min_seconds: f64,
     pub max_seconds: f64,
     pub ffmpeg_timeout: Duration,
+    /// Apply EBU R128 loudnorm during ingest (ROADMAP 2.2.1). Default
+    /// `true` so all clones land at broadcast-friendly level (no
+    /// whispered Trump or screaming Peter). Tests can disable to keep
+    /// signal arithmetic deterministic.
+    pub apply_loudnorm: bool,
+    /// Reject post-encode WAVs whose mean absolute amplitude is below
+    /// this fraction of full scale. 0.005 ≈ -46 dBFS — well below
+    /// even quiet speech, so anything that trips this is genuinely
+    /// silent or near-silent. ROADMAP 2.2.1.
+    pub silence_min_mean_abs: f32,
 }
 
 impl Default for IngestConfig {
@@ -27,6 +37,8 @@ impl Default for IngestConfig {
             min_seconds: 10.0,
             max_seconds: 60.0,
             ffmpeg_timeout: Duration::from_secs(30),
+            apply_loudnorm: true,
+            silence_min_mean_abs: 0.005,
         }
     }
 }
@@ -149,6 +161,35 @@ pub fn probe(path: &Path) -> Result<AudioProbe> {
     })
 }
 
+/// Read a 16-bit PCM WAV from `path` and return mean(|sample|) /
+/// i16::MAX in [0.0, 1.0]. Used by the silence-rejection check in
+/// `ingest`. Errors if the WAV isn't decodable, isn't 16-bit, or has
+/// zero samples.
+fn mean_absolute_amplitude(path: &Path) -> Result<f32> {
+    let mut reader =
+        hound::WavReader::open(path).with_context(|| format!("opening WAV {}", path.display()))?;
+    let spec = reader.spec();
+    if spec.bits_per_sample != 16 {
+        bail!(
+            "silence check expects 16-bit PCM, got {} bit on {}",
+            spec.bits_per_sample,
+            path.display()
+        );
+    }
+
+    let mut sum: u64 = 0;
+    let mut count: u64 = 0;
+    for sample in reader.samples::<i16>() {
+        let s = sample.with_context(|| format!("decoding sample in {}", path.display()))?;
+        sum += s.unsigned_abs() as u64;
+        count += 1;
+    }
+    if count == 0 {
+        bail!("WAV has zero samples: {}", path.display());
+    }
+    Ok((sum as f32) / (count as f32) / (i16::MAX as f32))
+}
+
 pub fn ingest(input: &Path, output: &Path, cfg: &IngestConfig) -> Result<IngestReport> {
     if !input.exists() {
         bail!("audio source not found: {}", input.display());
@@ -163,9 +204,21 @@ pub fn ingest(input: &Path, output: &Path, cfg: &IngestConfig) -> Result<IngestR
 
     // `--` separates ffmpeg's own flags from the positional input/output paths,
     // so a path starting with `-` can never be reinterpreted as a flag.
-    let mut child = Command::new("ffmpeg")
-        .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
-        .arg(input)
+    //
+    // ROADMAP 2.2.1: when `apply_loudnorm` is true (default), we add an
+    // EBU R128 loudnorm filter to the chain so all ingested clips land
+    // at broadcast level (I=-16 LUFS integrated, TP=-1.5 dBTP true-peak,
+    // LRA=11 LU loudness range). Same parameters as scripts/clone_voice.sh
+    // so a manual --text speak through a cloned voice matches the level
+    // of a pre-rendered pack. Filter chain runs BEFORE resample/channel
+    // conversion so the analyzer sees the source's own dynamic range.
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+        .arg(input);
+    if cfg.apply_loudnorm {
+        cmd.args(["-af", "loudnorm=I=-16:TP=-1.5:LRA=11"]);
+    }
+    let mut child = cmd
         .args([
             "-ar",
             &cfg.target_sample_rate.to_string(),
@@ -233,6 +286,30 @@ pub fn ingest(input: &Path, output: &Path, cfg: &IngestConfig) -> Result<IngestR
             probed.duration_seconds,
             cfg.min_seconds,
             cfg.max_seconds,
+            input.display()
+        );
+    }
+
+    // ROADMAP 2.2.1: silence rejection. Reads the post-encode WAV and
+    // computes mean(|sample|) / i16::MAX. Below `silence_min_mean_abs`
+    // (default 0.005 ≈ -46 dBFS) means the input was effectively
+    // silent — would either crash GPT-SoVITS' Whisper transcription
+    // or produce an unusable cloned voice that just outputs hiss.
+    // Reject loudly with a clear hint so the user re-records / picks
+    // a different clip rather than spending 10 minutes wondering why
+    // their clone sounds wrong.
+    let mean_abs = mean_absolute_amplitude(output)
+        .with_context(|| format!("checking ingested audio level for {}", output.display()))?;
+    if mean_abs < cfg.silence_min_mean_abs {
+        // Don't leave a silent file behind for the cloning pipeline
+        // to choke on later.
+        let _ = std::fs::remove_file(output);
+        bail!(
+            "ingested audio is silent or too quiet (mean |amplitude| = {:.4} of full scale, threshold {:.4}).\n\
+             try a louder source: voice clone needs clear speech at conversational volume.\n\
+             source: {}",
+            mean_abs,
+            cfg.silence_min_mean_abs,
             input.display()
         );
     }
