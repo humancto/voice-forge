@@ -172,7 +172,26 @@ mod tests {
         s.try_acquire_owned().unwrap()
     }
 
-    #[tokio::test]
+    /// Poll `sink.events()` until it reaches `expected` or `deadline`
+    /// elapses. Avoids brittle fixed-sleep timing on slow CI runners
+    /// (the macOS GitHub Actions runner is consistently slower than
+    /// our local dev box).
+    async fn wait_for_events(
+        sink: &BlockingRecordingSink,
+        expected: usize,
+        deadline: Duration,
+    ) -> Vec<(PathBuf, std::time::Instant, std::time::Instant)> {
+        let start = std::time::Instant::now();
+        loop {
+            let events = sink.events();
+            if events.len() >= expected || start.elapsed() >= deadline {
+                return events;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn plays_items_in_fifo_order() {
         let sink = Arc::new(BlockingRecordingSink::new(Duration::from_millis(10)));
         let queue = PlaybackQueue::spawn(sink.clone() as Arc<dyn AudioSink>);
@@ -185,9 +204,7 @@ mod tests {
                 .await
                 .expect("push");
         }
-        // Wait for queue to drain. 5 × 10ms + slack.
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        let events = sink.events();
+        let events = wait_for_events(&sink, 5, Duration::from_secs(5)).await;
         assert_eq!(events.len(), 5);
         let paths: Vec<&str> = events.iter().map(|(p, _, _)| p.to_str().unwrap()).collect();
         assert_eq!(
@@ -202,7 +219,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn serializes_concurrent_plays_no_overlap() {
         // Three items, each play takes 50ms. If they overlap, the
         // total wall time would be ~50ms. If serialized, ~150ms.
@@ -217,8 +234,7 @@ mod tests {
                 .await
                 .expect("push");
         }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-        let events = sink.events();
+        let events = wait_for_events(&sink, 3, Duration::from_secs(5)).await;
         assert_eq!(events.len(), 3);
         // Strict ordering: each subsequent play STARTED after the
         // previous one ENDED.
