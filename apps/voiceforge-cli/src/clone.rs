@@ -1,14 +1,24 @@
 //! `voiceforge clone <name> <source> [--force]` — wraps
-//! `scripts/clone_voice.sh`.
+//! `scripts/clone_voice.sh`. `<source>` may be a local file path OR a
+//! URL (yt-dlp resolves it via `url_ingest::resolve_source`).
 
 use anyhow::{anyhow, bail, Context, Result};
 use std::process::{Command, Stdio};
 
 use crate::install_cloning;
 use crate::paths;
+use crate::url_ingest;
 use crate::voices;
 
 /// Spawn the clone-voice bash recipe and stream its output.
+///
+/// `source` may be:
+/// - a local file path (existing on disk)
+/// - a `file://` URL (scheme stripped)
+/// - an http/https/ytsearch URL (downloaded via yt-dlp into a tempdir)
+///
+/// Schemeless hostnames (`youtube.com/...`) error crisply with a hint
+/// to add `https://` — see `url_ingest::resolve_source`.
 pub fn run(name: String, source: String, force: bool) -> Result<()> {
     if !install_cloning::is_installed() {
         bail!(
@@ -27,12 +37,19 @@ pub fn run(name: String, source: String, force: bool) -> Result<()> {
         );
     }
 
+    // Resolve the source — local path or URL. The ResolvedSource value
+    // MUST stay in scope for the entire Command::status() below; its
+    // Drop unlinks the tempdir holding the downloaded WAV.
+    let resolved = url_ingest::resolve_source(&source)
+        .with_context(|| format!("resolving clone source {source:?}"))?;
+
     let script = resolve_clone_script()?;
 
+    let local_path = resolved.local_path();
     let mut cmd = Command::new("bash");
     cmd.arg(&script)
         .arg(&name)
-        .arg(&source)
+        .arg(local_path)
         .arg(if force { "1" } else { "0" })
         .stdin(Stdio::null())
         .stdout(Stdio::inherit())
@@ -45,6 +62,8 @@ pub fn run(name: String, source: String, force: bool) -> Result<()> {
     if !status.success() {
         bail!("clone_voice.sh exited non-zero: {status}");
     }
+    // _resolved drops here — tempdir cleanup (if any) fires.
+    drop(resolved);
     Ok(())
 }
 

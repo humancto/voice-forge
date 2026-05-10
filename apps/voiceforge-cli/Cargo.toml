@@ -25,6 +25,10 @@ flate2 = "1"
 fs2 = "0.4"
 tokio-util = { version = "0.7", features = ["io"] }
 futures-util = "0.3"
+# `which::which` for testable PATH lookup of yt-dlp (URL ingest, ROADMAP 2.3).
+# Default features include `regex` -- not needed; disable to keep tree slim.
+which = { version = "6", default-features = false }
+tempfile = "3"
 
 [dev-dependencies]
 hound = "3"

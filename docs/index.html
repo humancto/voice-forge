@@ -725,7 +725,8 @@ hint: open a new shell or `source /Users/me/.zshrc`</span>
 
       <div class="row2">
         <div>
-          <p>voiceforge has zero accounts, zero cloud TTS, zero outbound calls beyond the one-time model download from HuggingFace. your reference audio, your cloned voices, your reaction text, the synth output — never leaves <code>~/.voiceforge/</code>.</p>
+          <p>voiceforge has zero accounts, zero cloud TTS, zero telemetry. your reference audio, your cloned voices, your reaction text, the synth output — never leaves <code>~/.voiceforge/</code>.</p>
+          <p style="margin-top: 14px;">the only outbound calls voiceforge makes: <code>pack install</code> (tarball from voice-forge-packs), <code>install-cloning</code> (one-time GPT-SoVITS model download), and <code>clone &lt;URL&gt;</code> / <code>ingest &lt;URL&gt;</code> (uses yt-dlp to fetch the source — opt out by downloading the audio yourself and passing a local file path).</p>
           <p style="margin-top: 14px;">the codebase is open. the install script you can <code>less</code> first. the synth process you can <code>strace</code>. the model weights are on disk.</p>
 
           <div class="pill-row" style="margin-top: 22px;">
