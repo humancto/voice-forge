@@ -13,6 +13,7 @@ mod daemon;
 mod daemon_client;
 mod daemon_server;
 mod doctor;
+mod git_hooks;
 mod hook;
 mod ingest;
 mod install_cloning;
@@ -223,6 +224,43 @@ enum Commands {
     Pack {
         #[command(subcommand)]
         action: PackAction,
+    },
+    /// Install voiceforge integrations into your tooling.
+    /// (Currently: `git-hooks`. Future: `cloning` mirror of the
+    /// top-level `install-cloning`.)
+    Install {
+        #[command(subcommand)]
+        action: InstallAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum InstallAction {
+    /// Install voiceforge sentinel-bounded blocks into the four git
+    /// hooks (post-commit, post-merge, post-rewrite, pre-push) so
+    /// each fires a daemon event. Idempotent. Honors `core.hooksPath`.
+    /// Detects (and warns about) husky / lefthook / pre-commit
+    /// frameworks; doesn't refuse.
+    GitHooks {
+        /// Repo root. Default: walk up from CWD looking for `.git/`.
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        /// Override the stale-invocation guard (lets you install on
+        /// top of a manual `voiceforge send git_*` line that the
+        /// hook contains outside our sentinel block).
+        #[arg(long)]
+        force: bool,
+        /// Strip the sentinel block from all 4 hooks. Hook files we
+        /// created (vs appended to) are deleted when their post-strip
+        /// content equals the auto-generated shebang.
+        #[arg(long, conflicts_with_all = ["force", "status"])]
+        uninstall: bool,
+        /// Report per-hook installed/missing.
+        #[arg(long, conflicts_with_all = ["force", "uninstall"])]
+        status: bool,
+        /// Suppress framework-collision stderr warnings.
+        #[arg(long)]
+        quiet: bool,
     },
 }
 
@@ -440,6 +478,17 @@ async fn main() -> Result<()> {
             // documented contract holds even when bubbling errors.
             pack_cmd(action).await?;
         }
+        Commands::Install { action } => match action {
+            InstallAction::GitHooks {
+                repo,
+                force,
+                uninstall,
+                status,
+                quiet,
+            } => {
+                run_install_git_hooks(repo, force, uninstall, status, quiet)?;
+            }
+        },
     }
 
     Ok(())
@@ -795,6 +844,72 @@ fn f64_env(key: &str, default: f64, min: f64, max: f64) -> f64 {
 }
 
 /// `voiceforge shell-init` dispatcher. Returns the process exit code.
+/// `voiceforge install git-hooks` dispatcher. Returns Ok(()) on
+/// success; bubbles errors via the `?` operator at the call site
+/// (which prints them via anyhow's chain). Unlike the other `run_*`
+/// helpers this returns Result rather than i32 because the audit
+/// errors ARE the user feedback (multi-line guidance).
+fn run_install_git_hooks(
+    repo: Option<PathBuf>,
+    force: bool,
+    uninstall: bool,
+    status: bool,
+    quiet: bool,
+) -> Result<()> {
+    use shell_init::BinaryHint;
+
+    let start =
+        repo.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let repo_root = git_hooks::discover_repo(&start)?;
+
+    if status {
+        let report = git_hooks::status(&repo_root)?;
+        for s in &report {
+            let mark = if s.installed {
+                "installed"
+            } else {
+                "missing  "
+            };
+            println!("{} {} {}", mark, s.hook.name(), s.path.display());
+        }
+        return Ok(());
+    }
+
+    if uninstall {
+        let report = git_hooks::uninstall(&repo_root)?;
+        let mut removed = 0;
+        let mut deleted = 0;
+        let mut not_present = 0;
+        for r in &report.per_hook {
+            match r.action {
+                git_hooks::HookUninstallAction::Removed => removed += 1,
+                git_hooks::HookUninstallAction::HookFileDeleted => deleted += 1,
+                git_hooks::HookUninstallAction::NotPresent => not_present += 1,
+            }
+        }
+        println!(
+            "voiceforge: uninstall complete in {} ({} block-stripped, {} hook-files-deleted, {} not-present)",
+            report.hooks_dir.display(),
+            removed,
+            deleted,
+            not_present,
+        );
+        return Ok(());
+    }
+
+    // Default action = install.
+    let report = git_hooks::install(&repo_root, &BinaryHint::DiscoverViaPath, force, quiet)?;
+    let names: Vec<&str> = report.per_hook.iter().map(|r| r.hook.name()).collect();
+    println!(
+        "voiceforge: installed {} hooks in {} ({})",
+        names.len(),
+        report.hooks_dir.display(),
+        names.join(", "),
+    );
+    println!("hint: existing hook content (if any) was preserved -- our block is sentinel-bounded");
+    Ok(())
+}
+
 fn run_shell_init(
     shell: Option<String>,
     install: bool,

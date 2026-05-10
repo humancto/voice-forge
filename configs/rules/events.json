@@ -26,12 +26,7 @@
   },
   "command_succeeded": {
     "voice": "hype_narrator",
-    "lines": [
-      "Done.",
-      "Finished.",
-      "Command completed.",
-      "That worked."
-    ]
+    "lines": ["Done.", "Finished.", "Command completed.", "That worked."]
   },
   "git_commit": {
     "voice": "sarcastic_goblin",
@@ -41,11 +36,32 @@
       "Your changes are now part of history."
     ]
   },
+  "git_merge": {
+    "voice": "sarcastic_goblin",
+    "lines": [
+      "Branches reconciled. Briefly.",
+      "Merged. Pray the conflict markers stayed put.",
+      "Two histories enter, one history leaves."
+    ]
+  },
+  "git_rewrite": {
+    "voice": "sarcastic_goblin",
+    "lines": [
+      "History has been rewritten.",
+      "Your past is now a suggestion.",
+      "Force pushers, assemble."
+    ]
+  },
+  "git_push": {
+    "voice": "hype_narrator",
+    "lines": [
+      "Pushed. Now everyone knows.",
+      "Code is in the wild.",
+      "Hope you ran the tests."
+    ]
+  },
   "daemon_alive": {
     "voice": "tiny_robot",
-    "lines": [
-      "VoiceForge is still running.",
-      "Daemon heartbeat confirmed."
-    ]
+    "lines": ["VoiceForge is still running.", "Daemon heartbeat confirmed."]
   }
 }
