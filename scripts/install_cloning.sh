@@ -112,12 +112,21 @@ case "$MODE" in
     [[ -x "$VENV_DIR/bin/python" ]] || die "venv missing: $VENV_DIR — run 'voiceforge install-cloning --force'"
     [[ -d "$REPO_DIR/.git" ]] || die "repo missing: $REPO_DIR — run 'voiceforge install-cloning --force'"
     step "smoke import"
-    "$VENV_DIR/bin/python" -c "
+    # MUST mirror the install-time smoke (line ~304 below) and the
+    # runtime invocation in scripts/cloning_synth.py: `cd $REPO_DIR`
+    # first + export DYLD_FALLBACK_LIBRARY_PATH. GPT_SoVITS/sv.py uses
+    # os.getcwd()-relative paths to find ERes2NetV2 + the sv ckpt;
+    # without this, the import fails with "ModuleNotFoundError:
+    # ERes2NetV2" on a working install. Earlier --check versions ran
+    # the bare interpreter from CWD and produced a false negative that
+    # disagreed with `voiceforge doctor`'s report on the same install.
+    ( cd "$REPO_DIR" && DYLD_FALLBACK_LIBRARY_PATH="$FFMPEG6_PREFIX/lib" \
+      "$VENV_DIR/bin/python" -c "
 import sys
-sys.path.insert(0, '$REPO_DIR'); sys.path.insert(0, '$REPO_DIR/GPT_SoVITS')
+sys.path.insert(0, '.'); sys.path.insert(0, 'GPT_SoVITS')
 from GPT_SoVITS.TTS_infer_pack.TTS import TTS, TTS_Config
 print('OK')
-" >/dev/null || die "smoke import failed — re-install with --force"
+" >/dev/null ) || die "smoke import failed — re-install with --force"
     say "all checks passed"
     exit 0
     ;;

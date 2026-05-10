@@ -277,6 +277,58 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Say { text, voice } => {
             let voice = resolve_voice(voice);
+            // Pack-first dispatch: if `voice` names an installed pack,
+            // try to resolve `text` to one of its 13 pre-rendered
+            // events (by event_id, exact phrase text, or fuzzy
+            // contains). Hit -> sub-100ms WAV playback, no synth, no
+            // model load. Miss -> clear error pointing at the pack's
+            // event list. The user installed a 9MB pack and shouldn't
+            // need to also install the 1.7GB cloning runtime just to
+            // hear it.
+            //
+            // Falls through to the synth engine ONLY when the voice is
+            // NOT an installed pack (built-in preset / cloned voice /
+            // unknown -> existing engine.speak path which has its own
+            // routing).
+            if packs::pack_is_installed(&voice) {
+                match packs::resolve_text_to_event(&voice, &text) {
+                    Ok(Some(event)) => {
+                        let wav = packs::resolve_event_wav(&voice, &event)?;
+                        eprintln!(
+                            "voiceforge: pack {voice:?} matched event {event:?} -- playing pre-rendered WAV"
+                        );
+                        audio::play(wav.to_str().unwrap_or(""))?;
+                        return Ok(());
+                    }
+                    Ok(None) => {
+                        let events = packs::list_events(&voice).unwrap_or_default();
+                        let preview = events
+                            .iter()
+                            .take(6)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        let more = if events.len() > 6 {
+                            format!(" (+{} more)", events.len() - 6)
+                        } else {
+                            String::new()
+                        };
+                        bail!(
+                            "voice {voice:?} is installed as a PACK with {} pre-rendered phrases.\n\
+                             your text didn't match any phrase. available events: {preview}{more}.\n\
+                             \n\
+                             - see all phrases:   voiceforge play --pack {voice} --list\n\
+                             - play one:          voiceforge play --pack {voice} --event <id>\n\
+                             - say verbatim:      use one of the pack's phrase strings\n\
+                             - arbitrary text:    install cloning then `voiceforge clone {voice} <60s.wav>`",
+                            manifest_phrases_count(&voice),
+                        );
+                    }
+                    Err(e) => {
+                        bail!("voice {voice:?} is installed as a pack but its manifest could not be read: {e:#}");
+                    }
+                }
+            }
             let engine = tts::select_engine()?;
             let audio_path = engine.speak(&text, &voice).await?;
             audio::play(audio_path.to_str().unwrap_or(""))?;
@@ -880,6 +932,7 @@ fn list_voices_cmd() -> Result<()> {
     let active = config::read_active_voice();
     let presets = config::load_presets()?;
     let cloned = voices::list_cloned_voices()?;
+    let installed_packs: Vec<String> = packs::list_installed().unwrap_or_default();
 
     let mut out = std::io::stdout().lock();
     writeln!(out, "BUILT-IN")?;
@@ -898,9 +951,47 @@ fn list_voices_cmd() -> Result<()> {
         }
     }
 
+    if !installed_packs.is_empty() {
+        writeln!(out)?;
+        writeln!(
+            out,
+            "PACKS  (pre-rendered fixed phrases — use 'voiceforge play --pack <name>'"
+        )?;
+        writeln!(
+            out,
+            "        or 'voiceforge say --voice <name> --text <event-or-phrase>')"
+        )?;
+        for name in &installed_packs {
+            let info = packs::pack_info_local(name).ok();
+            let display = info
+                .as_ref()
+                .map(|m| m.display_name.clone())
+                .unwrap_or_else(|| name.clone());
+            let count = info.as_ref().map(|m| m.phrases).unwrap_or(0);
+            let tier = info
+                .as_ref()
+                .map(|m| m.voice_source.clone())
+                .unwrap_or_default();
+            let marker = if name == &active { "*" } else { " " };
+            let suffix = if tier.is_empty() {
+                format!("{count} phrases")
+            } else {
+                format!("{count} phrases — {tier}")
+            };
+            writeln!(out, " {marker} {:<24}  {display} ({suffix})", name)?;
+        }
+    }
+
     writeln!(out)?;
     writeln!(out, "active: {active}")?;
     Ok(())
+}
+
+/// Read the phrase count from a pack's manifest. Used by the pack-
+/// miss error message in `Commands::Say`. Returns 0 on any failure;
+/// the message is informational, not a correctness gate.
+fn manifest_phrases_count(pack: &str) -> u32 {
+    packs::pack_info_local(pack).map(|m| m.phrases).unwrap_or(0)
 }
 
 fn remove_voice_cmd(name: &str, force: bool) -> Result<()> {

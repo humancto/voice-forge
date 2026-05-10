@@ -667,6 +667,69 @@ pub fn list_installed() -> std::io::Result<Vec<String>> {
     Ok(out)
 }
 
+/// Whether `<packs_root>/<name>/manifest.toml` exists. Cheap check
+/// used by `voiceforge say --voice <name>` dispatch to decide whether
+/// the named "voice" is actually an installed pack — distinct from a
+/// cloned voice or a built-in preset.
+pub fn pack_is_installed(name: &str) -> bool {
+    if validate_pack_name(name).is_err() {
+        return false;
+    }
+    let Some(root) = packs_root() else {
+        return false;
+    };
+    root.join(name).join("manifest.toml").is_file()
+}
+
+/// Resolve a `voiceforge say --voice <pack> --text <text>` request to
+/// a specific event id within the pack, if the text matches one of
+/// the pack's pre-rendered phrases. Match precedence:
+///
+///   1. `text == event_id` exact (e.g. `--text "build_failed"`).
+///   2. `text == phrase_text` case-insensitive trimmed.
+///   3. `text.contains(phrase_text)` or `phrase_text.contains(text)`
+///      case-insensitive — the "did you mean" tier.
+///
+/// Returns `Ok(Some(event_id))` on hit, `Ok(None)` when the pack is
+/// installed but no phrase matches, `Err(...)` if the manifest
+/// can't be loaded.
+///
+/// The third tier is intentionally generous: users will type "the
+/// build failed" not "build_failed", and a fuzzy match feels right
+/// when the pack lists exactly one phrase per event id.
+pub fn resolve_text_to_event(pack: &str, text: &str) -> InstallResult<Option<String>> {
+    let manifest = pack_info_local(pack)?;
+    let needle = text.trim();
+    let needle_lower = needle.to_lowercase();
+
+    // 1. exact event_id match.
+    if manifest.phrases_table.contains_key(needle) {
+        return Ok(Some(needle.to_owned()));
+    }
+
+    // 2. exact phrase_text match (case-insensitive trimmed).
+    for (event, phrase) in &manifest.phrases_table {
+        if phrase.trim().to_lowercase() == needle_lower {
+            return Ok(Some(event.clone()));
+        }
+    }
+
+    // 3. fuzzy contains, but only if needle is non-trivial (>=4 chars
+    //    and >=2 words, so "test" alone doesn't fuzzily match every
+    //    phrase that contains "test").
+    let word_count = needle.split_whitespace().count();
+    if needle.len() >= 4 && word_count >= 2 {
+        for (event, phrase) in &manifest.phrases_table {
+            let p = phrase.trim().to_lowercase();
+            if p.contains(&needle_lower) || needle_lower.contains(&p) {
+                return Ok(Some(event.clone()));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
 /// Read the manifest.toml of an installed pack. Errors if pack dir
 /// missing or manifest unparseable.
 pub fn pack_info_local(name: &str) -> InstallResult<PackManifest> {
@@ -1644,5 +1707,151 @@ mod tests {
         std::env::set_var("VOICEFORGE_HOME", tmp.path());
         let err = remove_pack("nonexistent").unwrap_err();
         assert!(matches!(err, InstallError::UnknownPack(_)));
+    }
+
+    // ---- pack_is_installed / resolve_text_to_event -------------------
+
+    fn make_pack_with_manifest(home: &Path, pack: &str, phrases: &[(&str, &str)]) {
+        make_pack(
+            home,
+            pack,
+            &phrases.iter().map(|(e, _)| *e).collect::<Vec<_>>(),
+        );
+        let mut body = String::new();
+        body.push_str("schema_version = 1\n");
+        body.push_str(&format!("name           = \"{pack}\"\n"));
+        body.push_str(&format!("display_name   = \"{pack}\"\n"));
+        body.push_str("description    = \"x\"\n");
+        body.push_str("rendered_with        = \"x\"\n");
+        body.push_str("rendered_at          = \"2026-01-01\"\n");
+        body.push_str("sample_rate          = 32000\n");
+        body.push_str("channels             = 1\n");
+        body.push_str(&format!("phrases              = {}\n", phrases.len()));
+        body.push_str("voice_source         = \"x\"\n");
+        body.push_str("source_clip_url      = \"x\"\n");
+        body.push_str("source_clip_episode  = \"x\"\n");
+        body.push_str("source_clip_duration = 10.0\n");
+        body.push_str("reference_prompt_text = \"x\"\n");
+        body.push_str("license       = \"x\"\n");
+        body.push_str("takedown_url  = \"x\"\n");
+        body.push_str("\n[phrase_text]\n");
+        for (event, text) in phrases {
+            body.push_str(&format!(
+                "{event} = \"{}\"\n",
+                text.replace('\\', "\\\\").replace('"', "\\\"")
+            ));
+        }
+        std::fs::write(home.join("packs").join(pack).join("manifest.toml"), body).unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn pack_is_installed_true_when_manifest_present() {
+        let tmp = setup_tmp_home();
+        make_pack_with_manifest(tmp.path(), "trump", &[("build_failed", "Sad.")]);
+        assert!(pack_is_installed("trump"));
+        assert!(!pack_is_installed("nope"));
+    }
+
+    #[test]
+    #[serial]
+    fn pack_is_installed_false_for_invalid_name() {
+        let _tmp = setup_tmp_home();
+        assert!(!pack_is_installed("../etc/passwd"));
+        assert!(!pack_is_installed("UPPER"));
+    }
+
+    #[test]
+    #[serial]
+    fn resolve_text_to_event_matches_event_id_exactly() {
+        let tmp = setup_tmp_home();
+        make_pack_with_manifest(
+            tmp.path(),
+            "trump",
+            &[
+                ("build_failed", "Sad. The build failed."),
+                ("tests_passed", "Tremendous tests."),
+            ],
+        );
+        let r = resolve_text_to_event("trump", "build_failed").unwrap();
+        assert_eq!(r, Some("build_failed".to_string()));
+    }
+
+    #[test]
+    #[serial]
+    fn resolve_text_to_event_matches_phrase_text_case_insensitive() {
+        let tmp = setup_tmp_home();
+        make_pack_with_manifest(
+            tmp.path(),
+            "trump",
+            &[(
+                "build_success",
+                "Tremendous build. Nobody builds like you. Nobody.",
+            )],
+        );
+        let r = resolve_text_to_event(
+            "trump",
+            "TREMENDOUS BUILD. nobody builds like you. nobody.  ",
+        )
+        .unwrap();
+        assert_eq!(r, Some("build_success".to_string()));
+    }
+
+    #[test]
+    #[serial]
+    fn resolve_text_to_event_fuzzy_contains_when_text_is_substantial() {
+        let tmp = setup_tmp_home();
+        make_pack_with_manifest(
+            tmp.path(),
+            "trump",
+            &[(
+                "build_failed",
+                "Sad. The build failed. Many people are saying.",
+            )],
+        );
+        let r = resolve_text_to_event("trump", "the build failed").unwrap();
+        assert_eq!(r, Some("build_failed".to_string()));
+    }
+
+    #[test]
+    #[serial]
+    fn resolve_text_to_event_no_fuzzy_for_short_text() {
+        let tmp = setup_tmp_home();
+        make_pack_with_manifest(
+            tmp.path(),
+            "trump",
+            &[(
+                "build_failed",
+                "Sad. The build failed. Many people are saying.",
+            )],
+        );
+        // "sad" is 3 chars and 1 word — does NOT trigger fuzzy match
+        // (would otherwise match every phrase containing "sad").
+        let r = resolve_text_to_event("trump", "sad").unwrap();
+        assert_eq!(r, None);
+    }
+
+    #[test]
+    #[serial]
+    fn resolve_text_to_event_returns_none_on_no_match() {
+        let tmp = setup_tmp_home();
+        make_pack_with_manifest(
+            tmp.path(),
+            "trump",
+            &[("build_failed", "Sad. The build failed.")],
+        );
+        let r = resolve_text_to_event("trump", "completely random words here").unwrap();
+        assert_eq!(r, None);
+    }
+
+    #[test]
+    #[serial]
+    fn resolve_text_to_event_errors_when_pack_missing() {
+        let _tmp = setup_tmp_home();
+        let err = resolve_text_to_event("nonexistent", "anything").unwrap_err();
+        assert!(
+            matches!(err, InstallError::UnknownPack(_)),
+            "expected UnknownPack, got {err:?}"
+        );
     }
 }
