@@ -29,6 +29,9 @@ futures-util = "0.3"
 # Default features include `regex` -- not needed; disable to keep tree slim.
 which = { version = "6", default-features = false }
 tempfile = "3"
+# Read the post-ingest WAV for the silence-rejection RMS pass
+# (ROADMAP 2.2.1). Was a dev-dep; promoted to runtime.
+hound = "3"
 
 [dev-dependencies]
 hound = "3"

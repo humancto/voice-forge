@@ -216,3 +216,129 @@ fn write_silence_wav(path: &Path, sample_rate: u32, channels: u16, seconds: f64)
     }
     wav.finalize().expect("finalize wav");
 }
+
+/// Write a sine-wave WAV at `freq_hz` and full-scale amplitude
+/// `amplitude` (0.0 to 1.0). Used to feed the silence-rejection test
+/// real audio (vs `write_silence_wav`'s pure zeros).
+fn write_sine_wav(
+    path: &Path,
+    sample_rate: u32,
+    channels: u16,
+    seconds: f64,
+    freq_hz: f64,
+    amplitude: f32,
+) {
+    use std::f64::consts::PI;
+    let spec = hound::WavSpec {
+        channels,
+        sample_rate,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let file = File::create(path).expect("create wav");
+    let writer = BufWriter::new(file);
+    let mut wav = hound::WavWriter::new(writer, spec).expect("wav writer");
+    let total_frames = (sample_rate as f64 * seconds) as u32;
+    let scale = (amplitude * (i16::MAX as f32)) as f64;
+    for i in 0..total_frames {
+        let t = (i as f64) / (sample_rate as f64);
+        let s = (2.0 * PI * freq_hz * t).sin() * scale;
+        let s_i16 = s.round().clamp(i16::MIN as f64, i16::MAX as f64) as i16;
+        for _ in 0..channels {
+            wav.write_sample(s_i16).expect("write sample");
+        }
+    }
+    wav.finalize().expect("finalize wav");
+}
+
+// ROADMAP 2.2.1 — silence rejection.
+//
+// Pure-silent input passes the duration gate (>=10s) but should be
+// rejected by the post-encode amplitude probe. Without this guard,
+// the cloning pipeline downstream would hand pure silence to Whisper,
+// which would either crash or produce a useless "" transcription
+// that GPT-SoVITS then trains a useless reference embedding from.
+#[test]
+fn ingest_rejects_silent_input_2_2_1() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let silent = tmp.path().join("silent.wav");
+    // 12 seconds (passes min_seconds=10) of pure silence.
+    write_silence_wav(&silent, 22_050, 1, 12.0);
+
+    let out = tmp.path().join("out.wav");
+    let result = run_ingest(&silent, &out);
+
+    assert!(
+        !result.status.success(),
+        "ingest should reject 12s of silence; stdout={} stderr={}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+    let stderr = String::from_utf8_lossy(&result.stderr).to_lowercase();
+    assert!(
+        stderr.contains("silent") || stderr.contains("quiet") || stderr.contains("amplitude"),
+        "stderr should explain the silence rejection, got: {stderr}"
+    );
+    // The silent output should have been cleaned up — don't leave a
+    // zero-amplitude .wav for a later cloning attempt to choke on.
+    assert!(
+        !out.exists(),
+        "rejected silent output should be removed; still exists at {}",
+        out.display()
+    );
+}
+
+// ROADMAP 2.2.1 — loudnorm.
+//
+// A QUIET (but non-silent) sine-wave input passes the silence gate
+// after loudnorm bumps it to broadcast level. The amplitude on the
+// way OUT should be substantially higher than on the way IN.
+#[test]
+fn ingest_loudnorm_brings_quiet_input_to_broadcast_level() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let quiet = tmp.path().join("quiet_sine.wav");
+    // 12s of 440 Hz sine at 5% amplitude (~-26 dBFS peak). Real
+    // speech recorded too low sounds about like this.
+    write_sine_wav(&quiet, 32_000, 1, 12.0, 440.0, 0.05);
+
+    let out = tmp.path().join("out.wav");
+    let result = run_ingest(&quiet, &out);
+
+    assert!(
+        result.status.success(),
+        "ingest should normalize a quiet input through loudnorm; stderr={}",
+        String::from_utf8_lossy(&result.stderr),
+    );
+    assert!(out.exists());
+
+    // Read both, compare mean abs. Loudnorm should raise the quiet
+    // input substantially. We assert a multiplier rather than an
+    // absolute target because loudnorm's exact gain depends on the
+    // input's loudness measurement.
+    let in_mean = mean_abs_of_wav(&quiet);
+    let out_mean = mean_abs_of_wav(&out);
+    assert!(
+        out_mean > in_mean * 2.0,
+        "loudnorm should raise mean amplitude by >=2x; in={in_mean:.4} out={out_mean:.4}",
+    );
+    // And confirm we cleared the silence-rejection threshold.
+    assert!(
+        out_mean > 0.005,
+        "loudnorm output should clear the silence-rejection threshold; got {out_mean:.4}"
+    );
+}
+
+fn mean_abs_of_wav(path: &Path) -> f32 {
+    let mut reader = hound::WavReader::open(path).expect("open wav");
+    let spec = reader.spec();
+    assert_eq!(spec.bits_per_sample, 16);
+    let mut sum: u64 = 0;
+    let mut n: u64 = 0;
+    for s in reader.samples::<i16>() {
+        let s = s.expect("sample");
+        sum += s.unsigned_abs() as u64;
+        n += 1;
+    }
+    assert!(n > 0);
+    (sum as f32) / (n as f32) / (i16::MAX as f32)
+}
