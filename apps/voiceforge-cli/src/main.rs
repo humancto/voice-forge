@@ -26,6 +26,7 @@ mod shell_init;
 mod tts;
 mod url_ingest;
 mod voices;
+mod watch;
 
 #[derive(Parser)]
 #[command(name = "voiceforge", version)]
@@ -55,6 +56,47 @@ enum Commands {
         command: Vec<String>,
     },
     Daemon,
+    /// Watch one or more filesystem paths and fire daemon events on
+    /// changes (ROADMAP 3.4). Uses `notify` cross-platform; debounces
+    /// bursts (default 500ms); supports include/exclude globs matched
+    /// RELATIVE to each watched root.
+    Watch {
+        /// One or more paths to watch (file or directory).
+        paths: Vec<PathBuf>,
+        /// Daemon event to fire on each debounced burst.
+        #[arg(long, default_value = "file_changed")]
+        event: String,
+        /// Message template. Placeholders: {path}, {count}, {kinds}.
+        #[arg(long, default_value = "{path} changed")]
+        message: String,
+        /// Override per-frame voice for the whole watch.
+        #[arg(long)]
+        voice: Option<String>,
+        /// Debounce window (ms). Collapses a burst of fs events into
+        /// one daemon frame.
+        #[arg(long = "debounce", default_value_t = 500)]
+        debounce_ms: u64,
+        /// Glob patterns to include (matched against path RELATIVE
+        /// to the watched root). Multi-occurrence allowed.
+        #[arg(long)]
+        include: Vec<String>,
+        /// Glob patterns to exclude (relative to watched root).
+        #[arg(long)]
+        exclude: Vec<String>,
+        /// Disable directory recursion (default: recursive).
+        #[arg(long)]
+        no_recursive: bool,
+        /// Allow recursive watch on $HOME or /. Default refuses.
+        #[arg(long)]
+        allow_broad_watch: bool,
+        /// Exit 2 on first-frame NotReachable. Default: log + retry
+        /// (long-running watcher; daemon may not be up yet).
+        #[arg(long)]
+        strict: bool,
+        /// Suppress per-event stderr noise.
+        #[arg(long)]
+        quiet: bool,
+    },
     /// Read NDJSON events from stdin, forward each to the daemon.
     /// Designed for AI-agent integrations (Claude Code, Cursor, etc.)
     /// that emit one JSON object per line. Use `--profile claude-code`
@@ -377,6 +419,35 @@ async fn main() -> Result<()> {
         }
         Commands::Daemon => {
             daemon::run().await?;
+        }
+        Commands::Watch {
+            paths,
+            event,
+            message,
+            voice,
+            debounce_ms,
+            include,
+            exclude,
+            no_recursive,
+            allow_broad_watch,
+            strict,
+            quiet,
+        } => {
+            let exit = run_watch(
+                paths,
+                event,
+                message,
+                voice,
+                debounce_ms,
+                include,
+                exclude,
+                !no_recursive,
+                allow_broad_watch,
+                strict,
+                quiet,
+            )
+            .await;
+            std::process::exit(exit);
         }
         Commands::Send {
             event,
@@ -825,6 +896,49 @@ async fn run_hook(
     };
 
     hook::run(cfg, &socket_path).await
+}
+
+/// `voiceforge watch` dispatcher. Returns process exit code.
+#[allow(clippy::too_many_arguments)]
+async fn run_watch(
+    paths: Vec<PathBuf>,
+    event: String,
+    message: String,
+    voice: Option<String>,
+    debounce_ms: u64,
+    include: Vec<String>,
+    exclude: Vec<String>,
+    recursive: bool,
+    allow_broad_watch: bool,
+    strict: bool,
+    quiet: bool,
+) -> i32 {
+    let socket_path = match daemon_server::DaemonConfig::default_path() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("voiceforge watch: {e:#}");
+            return 4;
+        }
+    };
+    let connect_timeout = duration_env("VOICEFORGE_SEND_TIMEOUT_MS", 1000, 50, 30_000);
+    let read_timeout = duration_env("VOICEFORGE_SEND_READ_TIMEOUT_MS", 5000, 100, 60_000);
+
+    let cfg = watch::WatchConfig {
+        paths,
+        event,
+        message_template: message,
+        voice,
+        debounce_ms,
+        includes: include,
+        excludes: exclude,
+        recursive,
+        strict,
+        quiet,
+        allow_broad_watch,
+        connect_timeout,
+        read_timeout,
+    };
+    watch::run(cfg, &socket_path).await
 }
 
 fn u64_env(key: &str, default: u64, min: u64, max: u64) -> u64 {

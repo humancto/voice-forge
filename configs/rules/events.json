@@ -60,6 +60,14 @@
       "Hope you ran the tests."
     ]
   },
+  "file_changed": {
+    "voice": "tiny_robot",
+    "lines": [
+      "Files have changed.",
+      "Something on disk shifted.",
+      "Watcher saw a change."
+    ]
+  },
   "daemon_alive": {
     "voice": "tiny_robot",
     "lines": ["VoiceForge is still running.", "Daemon heartbeat confirmed."]
