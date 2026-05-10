@@ -111,6 +111,18 @@ Generic streaming forwarder. Backpressure-safe (per-frame fail threshold), passt
 
 ---
 
+### 7. Mirror every spoken line as a macOS notification
+
+```bash
+VOICEFORGE_MIRROR_NOTIFICATIONS=1 voiceforge daemon &
+voiceforge say --voice peter "build failed"
+# → audio plays AND a Notification Center banner appears with the line.
+```
+
+Opt-in visual mirror so you don't miss reactions when AirPods are off, audio is muted, or you're heads-down on another desktop. macOS only (uses `osascript`). First run triggers a one-time permission prompt for "Script Editor" — if you say no, mirroring silently no-ops. `voiceforge doctor` reports current state.
+
+---
+
 ### Two quality tiers, by use case
 
 | You want…                                                             | Use        |

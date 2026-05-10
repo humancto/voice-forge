@@ -17,6 +17,7 @@ mod git_hooks;
 mod hook;
 mod ingest;
 mod install_cloning;
+mod notify_macos;
 mod packs;
 mod paths;
 mod rules;

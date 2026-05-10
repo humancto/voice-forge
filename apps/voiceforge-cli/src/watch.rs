@@ -105,7 +105,7 @@ pub(crate) fn format_message(
     truncate_to_bytes(&rendered, MAX_MESSAGE_BYTES)
 }
 
-fn truncate_to_bytes(s: &str, max_bytes: usize) -> String {
+pub(crate) fn truncate_to_bytes(s: &str, max_bytes: usize) -> String {
     if s.len() <= max_bytes {
         return s.to_string();
     }
