@@ -1,0 +1,182 @@
+name: Bump Homebrew tap
+
+# Auto-update humancto/homebrew-voiceforge's Formula/voiceforge.rb on
+# every published engine release. Reads the .sha256 sidecars for the
+# two macOS targets (arm64 + x86_64), rewrites the formula version +
+# both sha256 lines, opens a PR against the tap repo.
+#
+# Requires repo secret HOMEBREW_TAP_TOKEN — a fine-grained PAT scoped
+# to humancto/homebrew-voiceforge with Contents:write + Pull
+# requests:write. NOT GITHUB_TOKEN — that's scoped to this repo only.
+#
+# Skips pre-releases (v*-rc*, v*-alpha*, etc.). The grep is anchored
+# to the tag suffix.
+#
+# SECURITY: every `run:` step that consumes attacker-controlled value
+# (tag name, repo name) does so via env: block, never inline ${{ }}.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  bump:
+    runs-on: ubuntu-22.04
+    if: github.event.release.prerelease == false
+    steps:
+      - name: Skip pre-release tags
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$TAG" == *-* ]]; then
+            echo "::notice::tag $TAG looks like a pre-release; skipping tap bump"
+            exit 78
+          fi
+          echo "tag $TAG accepted for tap bump"
+
+      - name: Compute version
+        id: version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          # Strip leading v: v0.2.0 -> 0.2.0
+          version="${TAG#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag $TAG does not strip to <X.Y.Z>; got $version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "computed: version=$version tag=$TAG"
+
+      - name: Download .sha256 sidecars from the release
+        id: shas
+        env:
+          REPO: ${{ github.repository }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/sidecars
+          for triple in aarch64-apple-darwin x86_64-apple-darwin; do
+            file="voiceforge-${VERSION}-${triple}.tar.gz.sha256"
+            gh release download "$TAG" \
+              --repo "$REPO" \
+              --pattern "$file" \
+              --dir /tmp/sidecars
+            # GitHub sha256 sidecar format: `<64hex>  <filename>`
+            sha=$(awk '{print $1}' "/tmp/sidecars/$file")
+            if [[ ! "$sha" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "::error::sha256 for $triple is not a 64-hex string: $sha" >&2
+              exit 1
+            fi
+            echo "${triple}_sha=$sha" >> "$GITHUB_OUTPUT"
+            echo "$triple -> $sha"
+          done
+
+      - name: Check out humancto/homebrew-voiceforge
+        uses: actions/checkout@v4
+        with:
+          repository: humancto/homebrew-voiceforge
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+          fetch-depth: 0
+
+      - name: Rewrite Formula/voiceforge.rb
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          ARM_SHA: ${{ steps.shas.outputs.aarch64-apple-darwin_sha }}
+          INTEL_SHA: ${{ steps.shas.outputs.x86_64-apple-darwin_sha }}
+        run: |
+          set -euo pipefail
+          cd tap
+          formula="Formula/voiceforge.rb"
+          [[ -f "$formula" ]] || { echo "::error::missing $formula" >&2; exit 1; }
+
+          # Bump the version line. The line is exactly `  version "X.Y.Z"`.
+          sed -i.bak -E "s|^(  version )\"[^\"]+\"|\\1\"${VERSION}\"|" "$formula"
+
+          # Rewrite the sha256 immediately after each `on_arm do` /
+          # `on_intel do` line. We use python for the multi-line context
+          # so we can never accidentally swap the two shas.
+          python3 - <<PYEOF
+          import os, re, sys
+          arm_sha = os.environ["ARM_SHA"]
+          intel_sha = os.environ["INTEL_SHA"]
+          with open("Formula/voiceforge.rb") as f:
+              src = f.read()
+
+          def bump(src, after_block, new_sha):
+              # Find `<after_block>` then the next `sha256 "..."` line.
+              # Rewrite that sha256 with new_sha. Anchored to the block
+              # opener so we can't cross-contaminate arm/intel.
+              pattern = re.compile(
+                  r"(" + re.escape(after_block) + r"[^\n]*\n[^\n]*?url[^\n]*\n[^\n]*?)sha256 \"[0-9a-f]{64}\"",
+                  re.MULTILINE,
+              )
+              new_src, n = pattern.subn(r'\1sha256 "' + new_sha + '"', src, count=1)
+              if n != 1:
+                  print(f"::error::failed to rewrite sha256 after {after_block!r} (matched {n} times)", file=sys.stderr)
+                  sys.exit(1)
+              return new_src
+
+          src = bump(src, "on_arm do", arm_sha)
+          src = bump(src, "on_intel do", intel_sha)
+          with open("Formula/voiceforge.rb", "w") as f:
+              f.write(src)
+          print(f"bumped version + 2 sha256 lines for v{os.environ['VERSION']}")
+          PYEOF
+
+          rm -f "${formula}.bak"
+
+          # Belt and braces: parse the result with ruby to catch any
+          # syntax break before we open a PR.
+          ruby -c "$formula"
+
+          echo "--- diff ---"
+          git diff --stat
+          git diff "$formula" | head -40
+
+      - name: Open PR against the tap
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd tap
+          if git diff --quiet; then
+            echo "no formula changes — already at v${VERSION}, nothing to do"
+            exit 0
+          fi
+          branch="bump/v${VERSION}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add Formula/voiceforge.rb
+          git commit -m "bump: v${VERSION}
+
+          Auto-bumped by .github/workflows/bump-tap.yml in ${REPO} on
+          release.published of ${TAG}.
+
+          Release: https://github.com/${REPO}/releases/tag/${TAG}"
+          git push -u origin "$branch" --force
+
+          gh pr create \
+            --repo humancto/homebrew-voiceforge \
+            --base main \
+            --head "$branch" \
+            --title "bump: v${VERSION}" \
+            --body "Auto-bumped from \`${REPO}\` release [${TAG}](https://github.com/${REPO}/releases/tag/${TAG}).
+
+          Both sha256 values verified against the published \`.sha256\` sidecars on the release.
+
+          ---
+          🤖 Generated by [.github/workflows/bump-tap.yml](https://github.com/${REPO}/blob/main/.github/workflows/bump-tap.yml)"

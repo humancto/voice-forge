@@ -57,7 +57,7 @@ Each unchecked item is one PR with tests. Expert agent (auto-detected from stack
 ## Phase 5 — Distribution
 
 - [ ] **5.1 `voiceforge.sh` static site on Cloudflare Pages: serves install.sh + three demo asciicasts with synced audio.**
-- [ ] **5.2 Homebrew tap as second install path.**
+- [x] **5.2 Homebrew tap as second install path.** _(Tap repo: https://github.com/humancto/homebrew-voiceforge. `Formula/voiceforge.rb` ships pinned to the latest engine release with real per-arch sha256 sidecars. Auto-bumped via `.github/workflows/bump-tap.yml` on each release. macOS arm64 + Intel; binary ships unsigned today — quarantine xattr workaround documented in formula `caveats`. Notarization queued as 5.2.1.)_
 - [ ] **5.3 `voiceforge share`: emits an asciinema cast with synced WAV track, one-shot upload.**
 
 ## Phase 6 — Pre-rendered voice packs
