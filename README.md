@@ -27,14 +27,99 @@
 VoiceForge is a **local voice runtime for your terminal.** It turns build failures, test runs, git commits, and AI-agent activity into spoken reactions — using any voice you point it at.
 
 ```text
-voiceforge install-cloning
-voiceforge clone peter ./peter_griffin_60s.wav
+voiceforge pack install peter
 voiceforge run -- npm test
   # ...20 minutes pass...
   # 🔊  "Holy crap Lois, the build is on fire!"
 ```
 
-Bring **any clean ≥60-second audio file** of the voice you want — a Family Guy clip you transcoded, a podcast segment, a recording of yourself. VoiceForge runs the proven multi-aux-ref recipe (1 main + 5 aux × 10 s, Whisper-transcribed) through **GPT-SoVITS v2** locally and the next time your build dies, that voice says so.
+Bring **any clean ≥60-second audio file** of the voice you want (or a YouTube URL — yt-dlp resolves it) — a Family Guy clip, a podcast segment, a recording of yourself. VoiceForge runs the proven multi-aux-ref recipe (1 main + 5 aux × 10 s, Whisper-transcribed) through **GPT-SoVITS v2** locally and the next time your build dies, that voice says so. **Or skip the cloning entirely** — `voiceforge pack install <name>` ships 5 pre-rendered celebrity voice packs (Peter Griffin, Trump, Musk, Kimmel, Neil deGrasse Tyson) that play in ~50 ms with no model load.
+
+## What you can do with voiceforge today
+
+Six real flows, all live on `main`. Each one ships, has tests, and works on `voiceforge --version` 0.2.0+.
+
+### 1. Hear celebrity voices react to your terminal — zero model install
+
+```bash
+brew tap humancto/voiceforge && brew install voiceforge          # or: curl install.sh | bash
+voiceforge daemon &; disown
+voiceforge pack install trump
+voiceforge say --voice trump --text "build_failed"               # plays pre-rendered WAV in ~50 ms
+voiceforge run --voice trump -- npm test                          # speaks on success/failure
+```
+
+5 packs × 13 events = 65 ready-to-play reactions. No Python, no GPU, no 1.7 GB download. The pack tarballs are 7-10 MB each and the binary is ~3 MB.
+
+### 2. Wire it into Claude Code so your AI agent talks back
+
+Edit `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "Notification": [{ "command": "voiceforge hook --profile claude-code" }],
+    "Stop": [{ "command": "voiceforge hook --profile claude-code" }]
+  }
+}
+```
+
+Now every Claude Code Notification / Stop event fires through the daemon. Walk away from a 20-minute deploy task; come back to Peter Griffin yelling that it succeeded — or the build burning down.
+
+### 3. Auto-react to long terminal commands (zsh / bash)
+
+```bash
+voiceforge shell-init --install zsh         # idempotent; one-time
+# new shell — anything taking > 3 s now fires command_succeeded / command_failed
+npm test                                     # 12 s, exits 0 → "Done."
+cargo build --release                        # 2 min, exits 1 → "The build failed again."
+```
+
+Catches everything you (or your AI agent) runs in the shell — `npm`, `cargo`, `pytest`, `pulumi up`, `terraform apply`. Skip-list defaults to silent on `cd`, `ls`, `pwd`, `clear`, `history`, `voiceforge`. Configurable.
+
+### 4. Audible git workflow
+
+```bash
+cd ~/projects/myapp
+voiceforge install git-hooks                 # writes 4 hooks, idempotent, honors core.hooksPath
+git commit -m "feat: x"                      # 🔊 "Commit saved."
+git push                                     # 🔊 "Pushed. Now everyone knows."
+git rebase -i HEAD~3                         # 🔊 "History has been rewritten."
+```
+
+Husky / lefthook / pre-commit users get a stderr warning (we never silently clobber). Worktrees and submodules work via `git rev-parse --git-common-dir`.
+
+### 5. Clone any voice from any audio source — including YouTube URLs
+
+```bash
+voiceforge install-cloning                   # one-time, ~10 min, ~1.7 GB; macOS arm64 today
+voiceforge clone peter https://www.youtube.com/watch?v=T2w5SQ0L65I    # yt-dlp under the hood
+voiceforge say --voice peter --text "the staging deploy is on fire"   # ~2-3 s synth on CPU
+```
+
+URL ingest is hardened: `--no-playlist`, `--max-filesize 250M`, `--socket-timeout 30`, `--retries 3`. Schemeless `youtube.com/...` is intentionally NOT auto-detected — the error teaches you to add `https://`. EBU R128 loudnorm is applied during ingest so quiet recordings get bumped to broadcast level before the model ever sees them. Silent inputs are rejected loudly.
+
+### 6. Pipe NDJSON events from any tool into the daemon
+
+```bash
+tail -f ~/.my-agent/events.log | voiceforge hook --event-from event_type
+echo '{"hook":{"event_name":"deploy_failed"}}' | voiceforge hook --event-from hook.event_name
+my-script --stream | voiceforge hook --voice peter --passthrough | jq
+```
+
+Generic streaming forwarder. Backpressure-safe (per-frame fail threshold), passthrough preserves stdout pipelines, exit codes distinguish "daemon down" (2) from "daemon rejected the frame" (1) from "post-connect garbage" (4).
+
+---
+
+### Two quality tiers, by use case
+
+| You want…                                                             | Use        |
+| --------------------------------------------------------------------- | ---------- |
+| ~50 ms playback of a fixed event (build_failed, deploy_done, …)       | **Pack**   |
+| Arbitrary text spoken in any voice you have an audio sample of        | **Cloned** |
+| Zero install beyond the binary; want to demo voiceforge in 30 seconds | **Pack**   |
+| Custom phrases for your team's specific events                        | **Cloned** |
+| Linux/Intel-Mac (cloning runtime is macOS-arm64 today)                | **Pack**   |
 
 ### Two quality tiers
 
@@ -138,10 +223,16 @@ test result: FAILED. 3 passed; 1 failed
 
 ## Quick start
 
-**Step 1 — install the binary** (~5 seconds via prebuilt; no Python, no Rust toolchain required):
+**Step 1 — install the binary.** Two paths, same binary:
 
 ```bash
+# macOS via Homebrew (auto-tracks new releases via brew upgrade):
+brew tap humancto/voiceforge
+brew install voiceforge
+
+# Or universal installer (curl | bash, ~5 seconds, all 4 platforms):
 curl -fsSL https://raw.githubusercontent.com/humancto/voice-forge/main/install.sh | bash
+
 voiceforge say --text "VoiceForge is ready"
 ```
 
@@ -257,6 +348,26 @@ Two layers, all local:
                 ▼
                 🔊  speakers go brrrr
 ```
+
+## What's new since v0.2.0 (currently on `main`)
+
+The v0.2.0 release shipped the binary distribution + the daemon. Since then, a stack of user-visible features have landed and are live on `main` ahead of the next tagged release:
+
+| PR  | What                                                                                                                                                                                                        | Roadmap |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| #29 | `voiceforge say --voice <pack>` resolves to pre-rendered phrases (3-tier match: event_id → exact phrase → fuzzy contains). `voiceforge voices` lists installed packs in their own section.                  | UX      |
+| #28 | `voiceforge clone <URL>` and `voiceforge ingest <URL>` accept any URL `yt-dlp` resolves. Hardened: `--no-playlist --max-filesize 250M --socket-timeout 30 --retries 3`.                                     | 2.3     |
+| #27 | `docs/AGENTS.md` — full Claude Code / Cursor / generic-stream integration guide. New "agents" section on the docs site with copy-paste config.                                                              | docs    |
+| #26 | Pack tables refreshed (5 packs marked shipping); embedded `<audio>` players on the docs site for instant in-browser preview.                                                                                | docs    |
+| #25 | **install.sh `awk -F'/'` bug fix** — was silently sending 100% of installs through the slow from-source path. Now actual prebuilts work.                                                                    | P0 fix  |
+| #24 | `voiceforge hook` — NDJSON forwarder with `--profile claude-code`, exit codes 0/1/2/4, env-tunable thresholds.                                                                                              | 3.3     |
+| #23 | `voiceforge shell-init` — zsh/bash hook installer with sentinel-bounded blocks.                                                                                                                             | 3.1     |
+| #22 | `voiceforge send <event>` — single-frame daemon client with retry-loop bind-race protection.                                                                                                                | 1.9     |
+| #21 | Unix-socket NDJSON daemon at `~/.voiceforge/voiceforge.sock`.                                                                                                                                               | 1.8     |
+| #30 | `voiceforge install git-hooks` — per-repo git hooks installer (post-commit, post-merge, post-rewrite, pre-push). Honors `core.hooksPath`; chases worktree `.git`-file via `git rev-parse --git-common-dir`. | 3.2     |
+| #31 | Ingest now applies EBU R128 loudnorm (I=-16 LUFS) + rejects silent input. Quiet recordings no longer produce quiet clones.                                                                                  | 2.2.1   |
+
+Total: **220 tests green**, clippy + fmt clean. The next tagged release will roll all of these.
 
 ## What's shipped
 
