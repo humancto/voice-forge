@@ -37,8 +37,6 @@
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use rand::rngs::StdRng;
-use rand::SeedableRng;
 use serde::Deserialize;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -546,12 +544,6 @@ pub(crate) mod test_support {
     }
 }
 
-// Suppress unused-import warning when StdRng isn't pulled in by tests.
-#[allow(dead_code)]
-fn _unused_rng_marker() -> StdRng {
-    StdRng::seed_from_u64(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -814,7 +806,13 @@ mod tests {
             static_p,
         );
         let (_voice, line) = llm.react("build_failed").await;
-        assert!(line.starts_with("LLM error:"), "got: {line:?}");
+        // Connection refused → classify_error returns "network".
+        // (On some kernels we might see "timeout" if the SYN never gets
+        // an RST; both are valid strict-mode error lines.)
+        assert!(
+            line == "LLM error: network" || line == "LLM error: timeout",
+            "got: {line:?}",
+        );
     }
 
     #[tokio::test]
