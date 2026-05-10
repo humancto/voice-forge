@@ -1,0 +1,226 @@
+name: Bump Homebrew tap
+
+# Auto-update humancto/homebrew-voiceforge's Formula/voiceforge.rb on
+# every published engine release. Reads the .sha256 sidecars for the
+# two macOS targets (arm64 + x86_64), rewrites the formula version +
+# both sha256 lines, opens a PR against the tap repo.
+#
+# Requires repo secret HOMEBREW_TAP_TOKEN — a fine-grained PAT scoped
+# to humancto/homebrew-voiceforge with Contents:write + Pull
+# requests:write. NOT GITHUB_TOKEN — that's scoped to this repo only.
+#
+# Skips pre-releases and non-semver tags. Pre-release detection is
+# belt-and-braces: the GitHub-side `release.prerelease` flag AND a
+# regex on the tag (catches a publisher who unchecked "pre-release"
+# in the UI but kept a hyphen in the tag, or vice versa).
+#
+# SECURITY: every `run:` step that consumes attacker-controlled value
+# (tag name, repo name, user-set sha values) does so via env: block,
+# never inline ${{ }}. Tag is regex-validated BEFORE any echo so
+# workflow-command injection (newlines into ::notice::) is impossible.
+# Cross-repo write uses HOMEBREW_TAP_TOKEN, not GITHUB_TOKEN.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+# Two near-simultaneous releases (e.g., a re-publish) would otherwise
+# race on the bump/v<X.Y.Z> branch + PR creation. The force-push
+# masks the branch race, but `gh pr create` would fail "PR already
+# open with same head". Group by tag name so concurrent runs of the
+# SAME tag serialize.
+concurrency:
+  group: bump-tap-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-22.04
+    if: github.event.release.prerelease == false
+    steps:
+      - name: Validate + compute version
+        id: version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          # Validate FIRST so $TAG can never reach a workflow command
+          # (`::notice::`, `::error::`) with newline-injection or
+          # other workflow-command escapes. Anything not matching
+          # v<X.Y.Z> exits before any echo of $TAG.
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            # Skip rather than fail: a v*-rc1 / v*-alpha1 pre-release
+            # tag is normal+expected. The release.prerelease == false
+            # `if:` above catches the GitHub-side flag; this catches
+            # a publisher who unchecked "pre-release" in the UI but
+            # kept a hyphen in the tag.
+            echo "::notice::tag does not match v<X.Y.Z>; skipping tap bump (pre-release or non-semver)"
+            echo "skip=1" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          version="${TAG#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "skip=0" >> "$GITHUB_OUTPUT"
+          echo "computed: version=$version tag=$TAG"
+
+      - name: Download .sha256 sidecars from the release
+        if: steps.version.outputs.skip != '1'
+        id: shas
+        env:
+          REPO: ${{ github.repository }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/sidecars
+          for triple in aarch64-apple-darwin x86_64-apple-darwin; do
+            file="voiceforge-${VERSION}-${triple}.tar.gz.sha256"
+            gh release download "$TAG" \
+              --repo "$REPO" \
+              --pattern "$file" \
+              --dir /tmp/sidecars
+            # GitHub sha256 sidecar format: `<64hex>  <filename>`
+            sha=$(awk '{print $1}' "/tmp/sidecars/$file")
+            if [[ ! "$sha" =~ ^[0-9a-f]{64}$ ]]; then
+              echo "::error::sha256 for $triple is not a 64-hex string" >&2
+              exit 1
+            fi
+            echo "${triple}_sha=$sha" >> "$GITHUB_OUTPUT"
+            echo "$triple -> $sha"
+          done
+
+      - name: Check out humancto/homebrew-voiceforge
+        if: steps.version.outputs.skip != '1'
+        # Pinned to a commit SHA (defense-in-depth against tag-rewrite
+        # attacks on the action). v4.1.7 release, 2024-07-22.
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+        with:
+          repository: humancto/homebrew-voiceforge
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+          # fetch-depth: 1 is plenty — we create a new branch + push;
+          # never need history.
+          fetch-depth: 1
+
+      - name: Rewrite Formula/voiceforge.rb
+        if: steps.version.outputs.skip != '1'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          ARM_SHA: ${{ steps.shas.outputs.aarch64-apple-darwin_sha }}
+          INTEL_SHA: ${{ steps.shas.outputs.x86_64-apple-darwin_sha }}
+        run: |
+          set -euo pipefail
+          cd tap
+          formula="Formula/voiceforge.rb"
+          [[ -f "$formula" ]] || { echo "::error::missing $formula" >&2; exit 1; }
+
+          # Bump the version line. The line is exactly `  version "X.Y.Z"`.
+          sed -i.bak -E "s|^(  version )\"[^\"]+\"|\\1\"${VERSION}\"|" "$formula"
+
+          # Rewrite the sha256 lines. CRUCIAL: we scope the search to
+          # within the `on_macos do` ... `end` block. If a future
+          # formula adds `on_linux do { on_arm do { sha256 ... } }`,
+          # the bare `on_arm do` anchor would otherwise silently
+          # corrupt the Linux block with the macOS arm sha. Find the
+          # macOS block first, rewrite within it.
+          python3 - <<PYEOF
+          import os, re, sys
+          arm_sha = os.environ["ARM_SHA"]
+          intel_sha = os.environ["INTEL_SHA"]
+
+          with open("Formula/voiceforge.rb") as f:
+              src = f.read()
+
+          # Find the on_macos block (between `on_macos do` and the
+          # matching `end`). We use a non-greedy match plus a sentinel
+          # check that the next outer `end` exists.
+          macos_match = re.search(
+              r"(on_macos do\b.*?^  end\b)",
+              src,
+              re.DOTALL | re.MULTILINE,
+          )
+          if not macos_match:
+              print("::error::no `on_macos do ... end` block found in formula", file=sys.stderr)
+              sys.exit(1)
+          macos_block = macos_match.group(1)
+          macos_start, macos_end = macos_match.span(1)
+
+          def bump_within(block, after_block, new_sha):
+              # Within the macos_block, find `<after_block>` then the
+              # next `sha256 "..."` line (must be on the line right
+              # after the `url` line for this arch). Anchored so the
+              # arm bump can't land on the intel sha and vice versa.
+              pattern = re.compile(
+                  r"(" + re.escape(after_block) + r"[^\n]*\n[^\n]*?url[^\n]*\n[^\n]*?)sha256 \"[0-9a-f]{64}\"",
+                  re.MULTILINE,
+              )
+              new_block, n = pattern.subn(
+                  r'\1sha256 "' + new_sha + '"', block, count=1
+              )
+              if n != 1:
+                  print(f"::error::failed to rewrite sha256 after {after_block!r} inside on_macos block (matched {n} times)", file=sys.stderr)
+                  sys.exit(1)
+              return new_block
+
+          macos_block = bump_within(macos_block, "on_arm do", arm_sha)
+          macos_block = bump_within(macos_block, "on_intel do", intel_sha)
+
+          new_src = src[:macos_start] + macos_block + src[macos_end:]
+          with open("Formula/voiceforge.rb", "w") as f:
+              f.write(new_src)
+          print(f"bumped version + 2 sha256 lines for v{os.environ['VERSION']} (scoped to on_macos)")
+          PYEOF
+
+          rm -f "${formula}.bak"
+
+          # Belt-and-braces: parse the result with ruby to catch any
+          # syntax break before we open a PR.
+          ruby -c "$formula"
+
+          echo "--- diff ---"
+          git diff --stat
+          git diff "$formula" | head -40
+
+      - name: Open PR against the tap
+        if: steps.version.outputs.skip != '1'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          cd tap
+          if git diff --quiet; then
+            echo "no formula changes — already at v${VERSION}, nothing to do"
+            exit 0
+          fi
+          branch="bump/v${VERSION}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add Formula/voiceforge.rb
+          git commit -m "bump: v${VERSION}
+
+          Auto-bumped by .github/workflows/bump-tap.yml in ${REPO} on
+          release.published of ${TAG}.
+
+          Release: https://github.com/${REPO}/releases/tag/${TAG}"
+          git push -u origin "$branch" --force
+
+          gh pr create \
+            --repo humancto/homebrew-voiceforge \
+            --base main \
+            --head "$branch" \
+            --title "bump: v${VERSION}" \
+            --body "Auto-bumped from \`${REPO}\` release [${TAG}](https://github.com/${REPO}/releases/tag/${TAG}).
+
+          Both sha256 values verified against the published \`.sha256\` sidecars on the release.
+
+          ---
+          🤖 Generated by [.github/workflows/bump-tap.yml](https://github.com/${REPO}/blob/main/.github/workflows/bump-tap.yml)"
