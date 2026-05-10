@@ -374,9 +374,9 @@
     <div class="row">
       <a class="brand" href="#top">voiceforge</a>
       <div class="links">
+        <a class="link" href="#use-cases">use cases</a>
         <a class="link" href="#install">install</a>
-        <a class="link" href="#clone">clone</a>
-        <a class="link" href="#use">use</a>
+        <a class="link" href="#capabilities">capabilities</a>
         <a class="link" href="#agents">agents</a>
         <a class="link" href="#packs">packs</a>
         <a class="cta" href="https://github.com/humancto/voice-forge">github →</a>
@@ -408,32 +408,133 @@
       </div>
     </section>
 
-    <!-- ========== INSTALL ========== -->
-    <section id="install">
-      <div class="section-tag"><span class="num">01</span> <span>install</span> <span class="rule"></span> <span>~5 sec via prebuilt binary</span></div>
-      <h2>three commands. <span class="accent">that's the install.</span></h2>
-      <p class="lede">step 1 fetches a prebuilt binary (~5 sec, no toolchain). step 2 is heavy and only needed for live cloning — skip if you just want OS-native fallback or the pre-rendered packs. step 3 points at any audio file you have.</p>
+    <!-- ========== USE CASES ========== -->
+    <section id="use-cases">
+      <div class="section-tag"><span class="num">00</span> <span>what it does today</span> <span class="rule"></span> <span>six real flows</span></div>
+      <h2>what you can do with <span class="accent">voiceforge today</span>.</h2>
+      <p class="lede">six concrete flows. all live on <code>main</code>, all tested, all on <code>voiceforge --version</code> 0.2.0+. nothing aspirational below.</p>
 
-      <div class="install-cards">
-        <div class="icard">
-          <div class="step">STEP 1</div>
-          <div class="what">binary on your $PATH. ~5 sec via prebuilt for darwin-arm64/x86_64 + linux-x86_64/aarch64. falls back to from-source on unsupported platforms.</div>
-          <code><span class="acid">$</span> curl -fsSL https://raw.githubusercontent.com/humancto/voice-forge/main/install.sh | bash</code>
+      <div class="install-cards" style="grid-template-columns: 1fr; gap: 18px; max-width: 800px; margin-top: 24px;">
+        <div class="term">
+          <div class="head"><div class="dots"><span></span><span></span><span></span></div><div class="title">1 — celebrity voices reacting to your terminal, zero model install</div></div>
+<div class="body"><span class="prompt">$</span> brew tap humancto/voiceforge &amp;&amp; brew install voiceforge   <span class="ghost"># or: curl install.sh | bash</span>
+<span class="prompt">$</span> voiceforge daemon &amp;; disown
+<span class="prompt">$</span> voiceforge pack install <span class="voice">trump</span>
+<span class="prompt">$</span> voiceforge say --voice <span class="voice">trump</span> --text "build_failed"      <span class="ghost"># ~50 ms, no synth</span>
+<span class="prompt">$</span> voiceforge run --voice <span class="voice">trump</span> -- npm test                 <span class="ghost"># speaks on success/fail</span>
+<span class="out">→ 5 packs × 13 events = 65 reactions out of the box. ~3 MB binary, 7-10 MB packs. no python, no GPU.</span></div>
         </div>
-        <div class="icard">
-          <div class="step">STEP 2</div>
-          <div class="what">downloads the GPT-SoVITS v2 stack (~1.7&nbsp;GB). idempotent. <strong>macOS arm64 only today</strong> (Linux/Windows: ROADMAP 2.1.1). skip this step if you only want the pre-rendered packs.</div>
-          <code><span class="acid">$</span> voiceforge install-cloning</code>
+
+        <div class="term">
+          <div class="head"><div class="dots"><span></span><span></span><span></span></div><div class="title">2 — wire it into Claude Code so your AI agent talks back</div></div>
+<div class="body"><span class="ghost"># ~/.claude/settings.json</span>
+{
+  "hooks": {
+    "Notification": [{ "command": "<span class="voice">voiceforge hook --profile claude-code</span>" }],
+    "Stop":         [{ "command": "<span class="voice">voiceforge hook --profile claude-code</span>" }]
+  }
+}
+<span class="out">→ walk away from a 20-min deploy, come back to Peter Griffin yelling that it succeeded — or burning down.</span></div>
         </div>
-        <div class="icard">
-          <div class="step">STEP 3</div>
-          <div class="what">point at any clean local audio file ≥60s. one main + 5 aux refs, whisper-transcribed.</div>
-          <code><span class="acid">$</span> voiceforge clone peter ./peter.wav</code>
+
+        <div class="term">
+          <div class="head"><div class="dots"><span></span><span></span><span></span></div><div class="title">3 — auto-react to long terminal commands (zsh / bash)</div></div>
+<div class="body"><span class="prompt">$</span> voiceforge shell-init --install zsh         <span class="ghost"># idempotent; one-time</span>
+<span class="prompt">$</span> npm test                                     <span class="ghost"># 12 s, exits 0</span>
+<span class="out">🔊  "Done."</span>
+<span class="prompt">$</span> cargo build --release                        <span class="ghost"># 2 min, exits 1</span>
+<span class="out">🔊  "The build failed again."</span>
+<span class="out">→ catches everything &gt; 3 s — npm/cargo/pytest/pulumi/terraform. skip-list silences cd/ls/pwd/clear/history.</span></div>
+        </div>
+
+        <div class="term">
+          <div class="head"><div class="dots"><span></span><span></span><span></span></div><div class="title">4 — audible git workflow (post-commit, post-merge, post-rewrite, pre-push)</div></div>
+<div class="body"><span class="prompt">$</span> voiceforge install git-hooks                 <span class="ghost"># 4 hooks, idempotent, honors core.hooksPath</span>
+<span class="prompt">$</span> git commit -m "feat: x"                      <span class="out">🔊  "Commit saved."</span>
+<span class="prompt">$</span> git push                                     <span class="out">🔊  "Pushed. Now everyone knows."</span>
+<span class="prompt">$</span> git rebase -i HEAD~3                         <span class="out">🔊  "History has been rewritten."</span>
+<span class="out">→ husky/lefthook/pre-commit users get a stderr warning. worktrees + submodules work via git rev-parse --git-common-dir.</span></div>
+        </div>
+
+        <div class="term">
+          <div class="head"><div class="dots"><span></span><span></span><span></span></div><div class="title">5 — clone any voice from any audio source — including YouTube URLs</div></div>
+<div class="body"><span class="prompt">$</span> voiceforge install-cloning                       <span class="ghost"># one-time, ~10 min, ~1.7 GB; macOS arm64</span>
+<span class="prompt">$</span> voiceforge clone <span class="voice">peter</span> https://www.youtube.com/watch?v=...
+<span class="prompt">$</span> voiceforge say --voice <span class="voice">peter</span> --text "the staging deploy is on fire"
+<span class="out">→ ~2-3 s synth on CPU. yt-dlp hardened: --no-playlist --max-filesize 250M --socket-timeout 30 --retries 3.
+→ EBU R128 loudnorm during ingest — quiet recordings get bumped to broadcast level. silent inputs rejected.</span></div>
+        </div>
+
+        <div class="term">
+          <div class="head"><div class="dots"><span></span><span></span><span></span></div><div class="title">6 — pipe NDJSON events from any tool into the daemon</div></div>
+<div class="body"><span class="prompt">$</span> tail -f ~/.my-agent/events.log | <span class="voice">voiceforge hook --event-from event_type</span>
+<span class="prompt">$</span> echo '{"hook":{"event_name":"deploy_failed"}}' \
+    | <span class="voice">voiceforge hook --event-from hook.event_name</span>
+<span class="prompt">$</span> my-script --stream | <span class="voice">voiceforge hook --voice peter --passthrough</span> | jq
+<span class="out">→ exit codes distinguish daemon-down (2) from rejected-frame (1) from post-connect-garbage (4).
+→ backpressure-safe via per-frame fail threshold; passthrough preserves stdout pipelines.</span></div>
         </div>
       </div>
 
-      <p style="margin-top: 32px;"><strong>just want pre-rendered packs?</strong> after step 1, run <code>voiceforge pack install peter</code> and skip steps 2+3 entirely. all 5 packs (peter, kimmel, neil_tyson, trump, musk) play in &lt;100ms with no model load.</p>
-      <p style="margin-top: 12px;">no rust toolchain required for the prebuilt path. <code>ffmpeg</code> is only needed for <code>voiceforge ingest</code> and <code>voiceforge clone</code> (from-source build also needs <code>cargo</code> + <code>git</code>). inspect-first variant for the curl-wary in the <a class="inline" href="https://github.com/humancto/voice-forge#quick-start">README</a>.</p>
+      <p style="margin-top: 28px; color: var(--mute); font-size: 14px;"><strong>two quality tiers, by use case:</strong> <strong>pack</strong> if you want ~50 ms playback of a fixed event (build_failed, deploy_done, …), zero install beyond the binary, or a 30-second demo. <strong>cloned</strong> if you want arbitrary text in any voice you have an audio sample of, or your team has custom phrases. linux + intel-mac users use packs (cloning runtime is macOS-arm64 today; ROADMAP 2.1.1 widens it).</p>
+    </section>
+
+    <!-- ========== INSTALL ========== -->
+    <section id="install">
+      <div class="section-tag"><span class="num">01</span> <span>install</span> <span class="rule"></span> <span>~5 sec via prebuilt binary or brew</span></div>
+      <h2>two install paths. <span class="accent">same binary.</span></h2>
+      <p class="lede">brew if you want upgrade-tracking via <code>brew upgrade</code>. curl-pipe-bash if you want one command, no extra commitment. step 2 (cloning runtime, ~1.7 GB) is heavy and OPTIONAL — skip it if you just want OS-default voice or pre-rendered packs.</p>
+
+      <div class="install-cards" style="grid-template-columns: 1fr 1fr; gap: 18px;">
+        <div class="icard">
+          <div class="step">PATH A — Homebrew (macOS)</div>
+          <div class="what">two commands. brew tracks new releases via <code>brew upgrade voiceforge</code>. arm64 + intel.</div>
+          <code><span class="acid">$</span> brew tap humancto/voiceforge<br/><span class="acid">$</span> brew install voiceforge</code>
+        </div>
+        <div class="icard">
+          <div class="step">PATH B — universal installer</div>
+          <div class="what">one command. ~5 sec via prebuilt for darwin-arm64/x86_64 + linux-x86_64/aarch64 (glibc ≥ 2.35). falls back to from-source on unsupported platforms. inspect-first via <code>curl ... -o install.sh; less install.sh; bash install.sh</code>.</div>
+          <code><span class="acid">$</span> curl -fsSL https://raw.githubusercontent.com/humancto/voice-forge/main/install.sh | bash</code>
+        </div>
+      </div>
+
+      <h3 style="margin-top: 36px; font-size: 18px; color: var(--ink);">verify the install (5 seconds)</h3>
+      <div class="term" style="max-width: 720px; margin-top: 12px;">
+        <div class="head"><div class="dots"><span></span><span></span><span></span></div><div class="title">first-run smoke</div></div>
+<div class="body"><span class="prompt">$</span> voiceforge --version
+<span class="out">voiceforge 0.2.0</span>
+<span class="prompt">$</span> voiceforge doctor
+<span class="ok">[OK]</span>    binary           /usr/local/bin/voiceforge
+<span class="ok">[OK]</span>    home             ~/.voiceforge
+<span class="ok">[OK]</span>    audio backend    rodio (CoreAudio)
+<span class="ok">[OK]</span>    embedded TTS     macOS say
+<span class="ok">[OK]</span>    daemon           not running (~/.voiceforge/voiceforge.sock absent)
+<span class="ok">[OK]</span>    yt-dlp           /opt/homebrew/bin/yt-dlp
+ok: 10  warn: 0   error: 0
+<span class="prompt">$</span> voiceforge say --text "voiceforge is ready"
+<span class="out">🔊  uses macOS `say` — no setup needed for the OS-default voice.</span></div>
+      </div>
+
+      <h3 style="margin-top: 36px; font-size: 18px; color: var(--ink);">30-second demo (no cloning required)</h3>
+      <div class="term" style="max-width: 720px; margin-top: 12px;">
+        <div class="head"><div class="dots"><span></span><span></span><span></span></div><div class="title">Peter Griffin reacting to your terminal — no model install</div></div>
+<div class="body"><span class="prompt">$</span> voiceforge daemon &amp;; disown                              <span class="ghost"># long-running event recipient</span>
+<span class="prompt">$</span> voiceforge pack install <span class="voice">peter</span>                          <span class="ghost"># 7.8 MB, ~3 sec</span>
+<span class="prompt">$</span> voiceforge play --pack <span class="voice">peter</span> --event build_failed       <span class="ghost"># instant, ~50 ms</span>
+<span class="prompt">$</span> voiceforge say --voice <span class="voice">peter</span> --text "tests_passed"        <span class="ghost"># pack-aware say, no synth</span>
+<span class="out">🔊  "Holy crap Lois, the build is on fire!"</span></div>
+      </div>
+
+      <h3 style="margin-top: 36px; font-size: 18px; color: var(--ink);">optional: live cloning runtime</h3>
+      <p style="margin-top: 8px; color: var(--mute);">skip if you only want the pre-rendered packs (peter / kimmel / neil_tyson / trump / musk + 6 more queued). install only if you want arbitrary text in your own cloned voice.</p>
+      <div class="term" style="max-width: 720px; margin-top: 12px;">
+        <div class="head"><div class="dots"><span></span><span></span><span></span></div><div class="title">cloning runtime (~10 min, ~1.7 GB; macOS arm64 today)</div></div>
+<div class="body"><span class="prompt">$</span> voiceforge install-cloning                              <span class="ghost"># Python 3.11 + ffmpeg@6 + GPT-SoVITS v2 weights</span>
+<span class="prompt">$</span> voiceforge clone <span class="voice">myname</span> https://www.youtube.com/watch?v=...   <span class="ghost"># yt-dlp downloads + clones</span>
+<span class="prompt">$</span> voiceforge say --voice <span class="voice">myname</span> --text "anything you write"      <span class="ghost"># ~2-3 s synth on CPU, then cached</span></div>
+      </div>
+
+      <p style="margin-top: 28px; color: var(--mute); font-size: 14px;"><strong>prereqs</strong>: nothing for the brew path. <code>ffmpeg</code> on PATH if you'll use <code>voiceforge ingest</code> or <code>clone</code> (brew installs it as a dep when you run <code>install-cloning</code>). <code>yt-dlp</code> on PATH if you'll pass URLs (optional — local files don't need it). Linux/Windows users get the binary + packs + agent integrations today; live cloning is macOS-arm64 today (ROADMAP 2.1.1 widens it).</p>
     </section>
 
     <!-- ========== CLONE ========== -->
@@ -538,6 +639,42 @@ voiceforge 0.2.0 — system check
 ok: 10  warn: 0   error: 0</div>
         </div>
       </div>
+    </section>
+
+    <!-- ========== CAPABILITIES ========== -->
+    <section id="capabilities">
+      <div class="section-tag"><span class="num">03.5</span> <span>capabilities</span> <span class="rule"></span> <span>everything voiceforge can do</span></div>
+      <h2>everything <span class="accent">voiceforge can do today</span>.</h2>
+      <p style="margin-bottom: 24px;">the full surface, by command. all green on `voiceforge --version` 0.2.0+. run any with <code>--help</code>.</p>
+
+      <table style="width: 100%; max-width: 920px; margin: 16px 0; border-collapse: collapse; font-size: 13px;">
+        <thead>
+          <tr style="background: var(--surface-2); text-align: left;">
+            <th style="padding: 10px;">command</th>
+            <th style="padding: 10px;">what it does</th>
+            <th style="padding: 10px; color: var(--mute);">when to use</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge say --voice X --text "..."</code></td><td style="padding: 8px 10px; vertical-align: top;">speaks text in voice X. routes to pack (~50 ms) if X is an installed pack and text matches an event/phrase; else synthesizes via cloning (~2-3 s) or embedded TTS (&lt;500 ms).</td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">the universal entry point</td></tr>
+          <tr style="background: var(--surface-2);"><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge run -- &lt;cmd&gt;</code></td><td style="padding: 8px 10px; vertical-align: top;">runs &lt;cmd&gt;, speaks build_success / build_failed when it exits.</td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">wrap a single long command</td></tr>
+          <tr><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge daemon</code></td><td style="padding: 8px 10px; vertical-align: top;">long-running unix-socket NDJSON server at <code>~/.voiceforge/voiceforge.sock</code>. recipient for everything below.</td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">always-on prerequisite for hooks/agents</td></tr>
+          <tr style="background: var(--surface-2);"><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge send &lt;event&gt;</code></td><td style="padding: 8px 10px; vertical-align: top;">single-frame daemon client. exit codes 0/1/2/4 distinguish ok/rejected/unreachable/protocol-error. retry-loop for daemon-startup race.</td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">cursor / scripts / one-shots</td></tr>
+          <tr><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge hook [--profile claude-code]</code></td><td style="padding: 8px 10px; vertical-align: top;">streaming NDJSON forwarder. reads stdin line-by-line, fires daemon events. <code>--profile claude-code</code> maps Claude's hook payload schema automatically. <code>--passthrough</code> preserves stdout pipelines.</td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">claude code / mcp servers / log tails</td></tr>
+          <tr style="background: var(--surface-2);"><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge shell-init &lt;zsh|bash&gt; --install</code></td><td style="padding: 8px 10px; vertical-align: top;">writes a sentinel-bounded preexec/precmd hook block to your rc. fires command_succeeded / command_failed for any command &gt; 3 s. idempotent.</td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">terminal catch-all</td></tr>
+          <tr><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge install git-hooks</code></td><td style="padding: 8px 10px; vertical-align: top;">installs post-commit / post-merge / post-rewrite / pre-push hooks. honors <code>core.hooksPath</code>. chases worktree <code>.git</code>-file. detects + warns on husky/lefthook collisions.</td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">git workflow audio</td></tr>
+          <tr style="background: var(--surface-2);"><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge pack {list,install,remove,info}</code></td><td style="padding: 8px 10px; vertical-align: top;">manages pre-rendered packs from the static index at humancto/voice-forge-packs. sha256-verified install. ~3 sec, ~7-10 MB per pack.</td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">add/remove celebrity voices</td></tr>
+          <tr><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge play --pack X --event Y</code></td><td style="padding: 8px 10px; vertical-align: top;">~50 ms WAV playback from an installed pack. no synth, no model load.</td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">scripted reactions to fixed events</td></tr>
+          <tr style="background: var(--surface-2);"><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge install-cloning</code></td><td style="padding: 8px 10px; vertical-align: top;">installs the GPT-SoVITS v2 cloning runtime (Python 3.11 + ffmpeg@6). idempotent. <code>--check</code> verifies, <code>--force</code> rebuilds, <code>--uninstall</code> removes.</td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">unlock arbitrary-text cloning (mac arm64)</td></tr>
+          <tr><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge clone &lt;name&gt; &lt;source&gt;</code></td><td style="padding: 8px 10px; vertical-align: top;">clones a voice from a local file OR URL (yt-dlp resolves it). EBU R128 loudnorm during ingest. silent inputs rejected. multi-aux-ref recipe (1 main + 5 × 10 s aux), Whisper-transcribed.</td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">make your own voice profiles</td></tr>
+          <tr style="background: var(--surface-2);"><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge ingest &lt;input&gt; &lt;output&gt;</code></td><td style="padding: 8px 10px; vertical-align: top;">transcodes any audio source to canonical 32 kHz mono 16-bit pcm WAV. accepts file paths and URLs. validates 10–60 s duration. applies loudnorm. rejects silent.</td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">prep audio for cloning manually</td></tr>
+          <tr><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge voices</code></td><td style="padding: 8px 10px; vertical-align: top;">lists built-in presets, cloned voices, AND installed packs in one view. <code>voiceforge voices remove &lt;name&gt;</code> deletes a clone.</td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">audit what voices you have</td></tr>
+          <tr style="background: var(--surface-2);"><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge use &lt;name&gt;</code></td><td style="padding: 8px 10px; vertical-align: top;">sets active default voice. when <code>--voice</code> is omitted on say/run, this is what plays.</td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">pick a default per-machine</td></tr>
+          <tr><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge doctor [--json]</code></td><td style="padding: 8px 10px; vertical-align: top;">10-check system health: binary, home, audio backend, embedded TTS, python server, cache, presets, config.toml, ffmpeg, yt-dlp, daemon socket, cloning install. JSON for tooling.</td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">diagnose anything weird</td></tr>
+        </tbody>
+      </table>
+
+      <p style="margin-top: 16px; color: var(--mute); font-size: 13px;"><strong>not yet shipped (queued):</strong> <code>voiceforge record</code> (mic capture; 2.4), <code>voiceforge watch</code> (filesystem changes; 3.4), macOS notification bridge (3.5), LLM reaction provider (4.1), streaming TTS (4.2), <code>voiceforge share</code> asciinema-with-audio (5.3). full ROADMAP at <a href="https://github.com/humancto/voice-forge/blob/main/ROADMAP.md">ROADMAP.md</a>.</p>
     </section>
 
     <!-- ========== AGENTS ========== -->
