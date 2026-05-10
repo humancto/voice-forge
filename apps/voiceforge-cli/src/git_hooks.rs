@@ -210,7 +210,40 @@ pub fn resolve_hooks_dir(repo: &Path) -> Result<PathBuf> {
         }
         return Ok(repo.join(p));
     }
-    Ok(repo.join(".git").join("hooks"))
+
+    // Default fallback. We CANNOT just `repo.join(".git").join("hooks")` here:
+    // in a linked worktree, `repo/.git` is a FILE (`gitdir: <main>/.git/worktrees/<name>`),
+    // and git itself resolves hooks against the **main** repo's `.git/hooks`,
+    // not the worktree's. Naive joining would point at `<file>/hooks/` and
+    // `create_dir_all` would fail with `ENOTDIR`. `git rev-parse
+    // --git-common-dir` is the documented way to get the shared `.git`
+    // dir for both the main repo and any worktree of it.
+    let common = Command::new("git")
+        .args([
+            "-C",
+            repo.to_str().ok_or_else(|| anyhow!("non-utf8 repo path"))?,
+        ])
+        .args(["rev-parse", "--git-common-dir"])
+        .output();
+    let common_dir = match common {
+        Ok(o) if o.status.success() => {
+            let raw = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            // `--git-common-dir` returns paths relative to `repo`, so we
+            // resolve against the repo. Absolute output is left alone.
+            if raw.is_empty() {
+                repo.join(".git")
+            } else {
+                let p = PathBuf::from(&raw);
+                if p.is_absolute() {
+                    p
+                } else {
+                    repo.join(p)
+                }
+            }
+        }
+        _ => repo.join(".git"),
+    };
+    Ok(common_dir.join("hooks"))
 }
 
 // -- framework collision detection -----------------------------------
@@ -435,13 +468,15 @@ pub fn uninstall(repo: &Path) -> Result<UninstallReport> {
         }
     }
 
-    // Best-effort: remove sidecar if every hook is now NotPresent or
-    // HookFileDeleted. Leaves it on AppendedToExisting so a future
-    // install knows we appended.
-    let any_left = reports
+    // Best-effort: remove sidecar if NO hook came back as `Removed`
+    // (i.e. every entry is NotPresent or HookFileDeleted, meaning
+    // there's nothing left to track for a future uninstall). When at
+    // least one hook was `Removed` we keep the sidecar so a future
+    // install knows we previously appended into a user-owned hook.
+    let any_appended_stripped = reports
         .iter()
         .any(|r| matches!(r.action, HookUninstallAction::Removed));
-    if !any_left {
+    if !any_appended_stripped {
         let _ = std::fs::remove_file(hooks_dir.join(SIDECAR_FILENAME));
     }
 
@@ -554,6 +589,70 @@ mod tests {
             r.canonicalize().unwrap(),
             tmp.path().canonicalize().unwrap()
         );
+    }
+
+    #[test]
+    fn install_in_real_worktree_lands_in_main_hooks_dir() {
+        // Create a real main repo and a linked worktree, then run
+        // `install` from inside the worktree. Hooks must land in the
+        // MAIN repo's `.git/hooks`, not under the worktree's `.git`
+        // FILE (which would error with NotADirectory).
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("main");
+        fs::create_dir(&main).unwrap();
+        Command::new("git")
+            .arg("init")
+            .arg("-q")
+            .arg(&main)
+            .status()
+            .expect("git init main");
+        // git worktree add requires at least one commit on main.
+        fs::write(main.join("README.md"), "x").unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(&main)
+            .args(["add", "."])
+            .status()
+            .expect("git add");
+        Command::new("git")
+            .arg("-C")
+            .arg(&main)
+            .args(["-c", "user.email=t@t", "-c", "user.name=t"])
+            .args(["commit", "-q", "-m", "init"])
+            .status()
+            .expect("git commit");
+        let wt = tmp.path().join("wt");
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(&main)
+            .args(["worktree", "add", "-q"])
+            .arg(&wt)
+            .arg("HEAD")
+            .status()
+            .expect("git worktree add");
+        if !status.success() {
+            // Some CI sandboxes block `git worktree add`. Skip rather
+            // than fail; the unit-level discover_repo_handles_git_file
+            // test still covers the discover path.
+            eprintln!("[skip] git worktree add failed (likely sandboxed); skipping test");
+            return;
+        }
+
+        let report = install(&wt, &discover(), false, true).expect("install in worktree");
+        // Hooks dir MUST be the main repo's hooks dir, not under the
+        // worktree's `.git` FILE.
+        let main_hooks = main.join(".git").join("hooks");
+        assert_eq!(
+            report.hooks_dir.canonicalize().unwrap(),
+            main_hooks.canonicalize().unwrap(),
+            "worktree install landed in {} instead of main hooks dir {}",
+            report.hooks_dir.display(),
+            main_hooks.display(),
+        );
+        for h in GitHook::ALL {
+            let p = main_hooks.join(h.name());
+            assert!(p.is_file(), "missing {}", p.display());
+        }
     }
 
     #[test]
