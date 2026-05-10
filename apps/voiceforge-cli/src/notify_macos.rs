@@ -310,7 +310,10 @@ mod tests {
         let s = build_script("peter", r#"build "failed""#);
         // Title must contain the literal middle-dot byte sequence and
         // the voice name (we render `voiceforge · peter`).
-        assert!(s.contains("voiceforge \u{00B7} peter"), "title missing: {s:?}");
+        assert!(
+            s.contains("voiceforge \u{00B7} peter"),
+            "title missing: {s:?}"
+        );
         // Body must have the inner double-quotes escaped.
         assert!(s.contains(r#"build \"failed\""#));
         // No raw double-quote inside the body or title.
