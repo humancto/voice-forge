@@ -32,6 +32,12 @@ tempfile = "3"
 # Read the post-ingest WAV for the silence-rejection RMS pass
 # (ROADMAP 2.2.1). Was a dev-dep; promoted to runtime.
 hound = "3"
+# voiceforge watch <path> (ROADMAP 3.4) — cross-platform fs events
+# (FSEvents on macOS, inotify on Linux, ReadDirectoryChangesW on
+# Windows). debouncer-mini coalesces bursts; globset filters paths.
+notify = "8"
+notify-debouncer-mini = "0.7"
+globset = "0.4"
 
 [dev-dependencies]
 hound = "3"
