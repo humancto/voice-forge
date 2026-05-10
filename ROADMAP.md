@@ -43,7 +43,7 @@ Each unchecked item is one PR with tests. Expert agent (auto-detected from stack
 ## Phase 3 — Plug into the dev workflow
 
 - [x] **3.1 `voiceforge shell-init` for zsh + bash: `preexec`/`precmd` hooks fire daemon events for commands over a configurable threshold.**
-- [ ] **3.2 `voiceforge install git-hooks`: `post-commit`, `post-merge`, `post-rewrite`, `pre-push` send daemon events. Idempotent, with uninstaller.**
+- [x] **3.2 `voiceforge install git-hooks`: `post-commit`, `post-merge`, `post-rewrite`, `pre-push` send daemon events. Idempotent, with uninstaller.** _(Honors `core.hooksPath`; chases worktree `.git`-file via `git rev-parse --git-common-dir`; detects + warns on husky/lefthook/pre-commit framework collisions; pre-push has terminal `exit 0` + consumes stdin so a daemon-down case can never refuse a push.)_
 - [x] **3.3 `voiceforge hook`: reads JSON Lines from stdin, forwards to daemon. Lets Claude Code / Codex / Cursor pipe their hook events in. Distinct from `voiceforge ingest` (audio transcoder) — different surface, different concept.**
 - [ ] **3.4 `voiceforge watch <path>`: speaks on filesystem changes via `notify`.**
 - [ ] **3.5 macOS notification bridge: `osascript` notification mirrors every spoken line.**
