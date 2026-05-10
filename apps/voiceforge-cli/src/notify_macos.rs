@@ -96,6 +96,11 @@ where
 ///
 /// Neutralizes the obvious injection vector `" with title "evil` —
 /// the closing `"` becomes `\"` and the AppleScript string stays open.
+///
+/// Built on macOS (used by `spawn_osascript`) and on all platforms in
+/// `cfg(test)` (the unit tests cover the pure logic cross-platform).
+/// Omitted from release Linux builds.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn escape_for_applescript(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 8);
     for c in s.chars() {
@@ -115,13 +120,16 @@ pub(crate) fn escape_for_applescript(s: &str) -> String {
 /// Cap the body to 240 bytes (Notification Center truncates around 256;
 /// 240 leaves headroom for the title + AppleScript wrapper). Reuses
 /// `watch::truncate_to_bytes` so the binary has one canonical truncator.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn truncate_body(s: &str) -> String {
     crate::watch::truncate_to_bytes(s, MAX_BODY_BYTES)
 }
 
+#[cfg(any(target_os = "macos", test))]
 const MAX_BODY_BYTES: usize = 240;
 
 /// Build the AppleScript source. Pure — no side effects, used in tests.
+#[cfg(any(target_os = "macos", test))]
 pub(crate) fn build_script(voice: &str, text: &str) -> String {
     let title = format!("voiceforge \u{00B7} {}", voice);
     let body = truncate_body(text);
