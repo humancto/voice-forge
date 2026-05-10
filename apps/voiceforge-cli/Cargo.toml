@@ -38,6 +38,12 @@ hound = "3"
 notify = "8"
 notify-debouncer-mini = "0.7"
 globset = "0.4"
+# `voiceforge`'s ReactionProvider trait needs `Arc<dyn ReactionProvider>`
+# for runtime selection (Static vs Llm). RPITIT (`-> impl Future + Send`)
+# is not dyn-compatible on stable; async-trait generates the Pin<Box<dyn
+# Future + Send>> adapter. One Box per call is rounding error against a
+# 500-3000ms LLM round-trip (ROADMAP 4.1).
+async-trait = "0.1.89"
 
 [dev-dependencies]
 hound = "3"

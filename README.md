@@ -111,6 +111,28 @@ Generic streaming forwarder. Backpressure-safe (per-frame fail threshold), passt
 
 ---
 
+### 7b. Use an LLM to write reactions in any voice's character (opt-in)
+
+```bash
+export VOICEFORGE_LLM_URL=https://api.openai.com/v1/chat/completions
+export OPENAI_API_KEY=sk-...
+voiceforge daemon &
+# Now `build_failed` events get a fresh in-character line every time,
+# not a random pull from the static rules.json.
+```
+
+| Env var                     | Default              | Purpose                                           |
+| --------------------------- | -------------------- | ------------------------------------------------- |
+| `VOICEFORGE_LLM_URL`        | unset (static rules) | OpenAI-compatible chat-completions endpoint       |
+| `VOICEFORGE_LLM_API_KEY`    | unset                | Bearer token. Falls back to `OPENAI_API_KEY`      |
+| `VOICEFORGE_LLM_MODEL`      | unset (server pick)  | Model name (e.g. `gpt-4o-mini`)                   |
+| `VOICEFORGE_LLM_TIMEOUT_MS` | `2000`               | Per-request hard cap; bump for local Ollama       |
+| `VOICEFORGE_LLM_STRICT`     | unset (silent fall)  | `1` to surface LLM errors instead of falling back |
+
+Any LLM failure (network, timeout, bad JSON, unknown voice, HTTP 4xx/5xx) silently falls through to the static rules so the daemon never goes silent. After 5 failures within 60s the LLM is skipped for 5 minutes (circuit breaker), then probed again. `voiceforge doctor` reports the active provider, endpoint reachability, and timeout. Works with OpenAI, local Ollama (`http://localhost:11434/v1/chat/completions`), or any chat-completions-shaped endpoint.
+
+---
+
 ### 7. Mirror every spoken line as a macOS notification
 
 ```bash
