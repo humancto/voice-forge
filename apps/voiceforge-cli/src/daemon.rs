@@ -7,6 +7,7 @@ use anyhow::Result;
 use std::sync::Arc;
 
 use crate::audio_sink::{AudioSink, RodioSink};
+use crate::cast::Casts;
 use crate::daemon_server::{serve, DaemonConfig};
 use crate::notify_macos;
 use crate::reaction;
@@ -23,7 +24,21 @@ pub async fn run() -> Result<()> {
             .and_then(|path| Rules::load(&path).ok())
             .unwrap_or_else(Rules::default_builtin),
     );
-    let provider = reaction::select_provider(rules);
+    let casts = Arc::new(Casts::load().unwrap_or_else(|e| {
+        eprintln!("voiceforge: failed to load casts.toml: {e:#} — continuing with no casts");
+        Casts::empty()
+    }));
+    let provider = reaction::select_provider(Arc::clone(&rules), Arc::clone(&casts));
+
+    // ROADMAP 4.3: warn loudly when casts are configured but the
+    // provider is StaticProvider — casts only fire through the LLM.
+    if !casts.is_empty() && provider.name() == "static" {
+        eprintln!(
+            "voiceforge: {} cast(s) configured but no LLM provider — set VOICEFORGE_LLM_URL and restart the daemon to enable, or remove casts.toml",
+            casts.len()
+        );
+    }
+
     let sink: Arc<dyn AudioSink> = Arc::new(RodioSink);
     let mirror = notify_macos::default_mirror();
 

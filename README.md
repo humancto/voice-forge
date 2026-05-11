@@ -133,6 +133,33 @@ Any LLM failure (network, timeout, bad JSON, unknown voice, HTTP 4xx/5xx) silent
 
 ---
 
+### 7c. Multi-voice casts: a Family Guy argument over your build failure
+
+```bash
+# Configure a cast for an event:
+cat > ~/.voiceforge/casts.toml <<'EOF'
+[casts.build_failed]
+voices = ["peter", "brian"]
+max_turns = 3
+EOF
+
+# Casts only fire through the LLM provider:
+export VOICEFORGE_LLM_URL=https://api.openai.com/v1/chat/completions
+export OPENAI_API_KEY=sk-...
+voiceforge daemon &
+
+# Now build_failed plays a 2-3 turn exchange:
+#   peter: oh no the compiler broke again
+#   brian: this is what tests are for, peter
+#   peter: tests are for cowards
+```
+
+Played sequentially through a single-consumer playback queue — turns never overlap and concurrent events from multiple sources are also serialized (fixes a latent single-voice race in the process). Without `VOICEFORGE_LLM_URL` the daemon warns at startup and falls back to the single-voice rules.json path. `voiceforge doctor` previews the configured casts so you can sanity-check `casts.toml` without launching the daemon.
+
+**Wire-compat note:** the daemon's `spoken` reply field is now `String | Array<{voice, line}>` — single-voice replies keep the legacy string shape; cast replies use the array shape. Existing 3.3 hooks check `ok` only and are unaffected.
+
+---
+
 ### 7. Mirror every spoken line as a macOS notification
 
 ```bash

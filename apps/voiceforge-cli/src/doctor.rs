@@ -68,6 +68,7 @@ pub async fn run_doctor() -> DoctorReport {
     checks.push(check_daemon_socket().await);
     checks.push(check_notification_bridge());
     checks.push(check_reaction_provider().await);
+    checks.push(check_casts());
 
     DoctorReport {
         schema_version: SCHEMA_VERSION,
@@ -351,7 +352,9 @@ async fn check_reaction_provider() -> Check {
     // the daemon would use. Cheap — no network call here.
     use std::sync::Arc;
     let rules = Arc::new(crate::rules::Rules::default_builtin());
-    let provider = crate::reaction::select_provider(Arc::clone(&rules));
+    let casts =
+        Arc::new(crate::cast::Casts::load().unwrap_or_else(|_| crate::cast::Casts::empty()));
+    let provider = crate::reaction::select_provider(Arc::clone(&rules), Arc::clone(&casts));
     let provider_name = provider.name();
 
     let url = std::env::var("VOICEFORGE_LLM_URL")
@@ -420,6 +423,38 @@ async fn check_reaction_provider() -> Check {
     } else {
         warn("reaction provider", detail)
     }
+}
+
+/// ROADMAP 4.3: report configured multi-voice casts. Previews each
+/// event's cast inline so users can sanity-check casts.toml without
+/// running the daemon.
+fn check_casts() -> Check {
+    let casts = match crate::cast::Casts::load() {
+        Ok(c) => c,
+        Err(e) => return warn("casts", format!("failed to load casts.toml: {e:#}")),
+    };
+    if casts.is_empty() {
+        return ok("casts", "0 (no casts.toml)".to_string());
+    }
+    let mut entries: Vec<String> = casts
+        .iter()
+        .map(|(event, cfg)| format!("{event}=[{}]", cfg.voices.join(",")))
+        .collect();
+    entries.sort();
+    let source = casts
+        .source()
+        .map(|p| format!(" from {}", p.display()))
+        .unwrap_or_default();
+    let mut detail = format!("{} ({}){source}", casts.len(), entries.join(", "));
+    // Mismatch warning: casts only fire through the LLM provider.
+    use std::sync::Arc;
+    let rules = Arc::new(crate::rules::Rules::default_builtin());
+    let provider = crate::reaction::select_provider(Arc::clone(&rules), Arc::new(casts));
+    if provider.name() == "static" {
+        detail.push_str(" — WARNING: no LLM provider configured; casts will not fire");
+        return warn("casts", detail);
+    }
+    ok("casts", detail)
 }
 
 fn check_cloning() -> Check {

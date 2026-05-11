@@ -1,0 +1,23 @@
+# Multi-voice cast registry (ROADMAP 4.3).
+#
+# Each [casts.<event>] entry maps a daemon event to a cast of voices.
+# When `VOICEFORGE_LLM_URL` is set AND an event has a cast configured,
+# the LLM provider returns a 2-3 turn dialogue instead of a single line.
+# Played sequentially through the playback queue (no overlap, ever).
+#
+# Casts only fire through the LLM provider. Without `VOICEFORGE_LLM_URL`,
+# `voiceforge daemon` warns at startup and falls back to single-voice
+# from rules.json.
+#
+# Constraints (enforced at load time):
+#   - 1 <= voices.len() <= 6
+#   - max_turns: NonZeroU8 (default 3 if omitted)
+#   - duplicate voices in `voices` are deduped with a warning
+
+[casts.build_failed]
+voices = ["peter", "brian"]
+max_turns = 3
+
+[casts.deploy_failed]
+voices = ["trump", "musk"]
+max_turns = 3

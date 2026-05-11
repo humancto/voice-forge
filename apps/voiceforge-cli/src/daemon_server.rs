@@ -31,6 +31,7 @@ use tokio::sync::Semaphore;
 
 use crate::audio_sink::AudioSink;
 use crate::notify_macos::Mirror;
+use crate::playback::{PlaybackItem, PlaybackQueue};
 use crate::reaction::ReactionProvider;
 #[cfg(test)]
 use crate::rules::Rules;
@@ -72,11 +73,26 @@ struct Frame {
     message: Option<String>,
 }
 
+/// One turn in a cast reply (ROADMAP 4.3).
+#[derive(Debug, Serialize)]
+struct TurnReply {
+    voice: String,
+    line: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 enum Reply {
-    Ok {
-        ok: bool, // always true; `untagged` needs the discriminant in-shape
+    /// Multi-turn cast (ROADMAP 4.3). MUST come before `Single` in the
+    /// enum so serde's untagged dispatch tries it first on round-trip
+    /// deserialize — `spoken: Vec<...>` and `spoken: String` are
+    /// disjoint at the JSON-type level so this is defensive only.
+    Cast {
+        ok: bool, // always true
+        spoken: Vec<TurnReply>,
+    },
+    Single {
+        ok: bool, // always true
         spoken: String,
         voice: String,
     },
@@ -87,11 +103,20 @@ enum Reply {
 }
 
 impl Reply {
-    fn ok(spoken: impl Into<String>, voice: impl Into<String>) -> Self {
-        Reply::Ok {
+    fn single(spoken: impl Into<String>, voice: impl Into<String>) -> Self {
+        Reply::Single {
             ok: true,
             spoken: spoken.into(),
             voice: voice.into(),
+        }
+    }
+    fn cast(turns: Vec<(String, String)>) -> Self {
+        Reply::Cast {
+            ok: true,
+            spoken: turns
+                .into_iter()
+                .map(|(voice, line)| TurnReply { voice, line })
+                .collect(),
         }
     }
     fn err(msg: impl Into<String>) -> Self {
@@ -139,6 +164,26 @@ pub async fn serve(
     sink: Arc<dyn AudioSink>,
     mirror: Arc<dyn Mirror>,
 ) -> Result<()> {
+    // Single-consumer playback queue (ROADMAP 4.3). All audio (single
+    // and cast) goes through here so playback never overlaps. Owned
+    // by the serve scope; consumer task lives until queue's last clone
+    // drops at function return.
+    let playback = PlaybackQueue::spawn(Arc::clone(&sink));
+    serve_with_playback(cfg, engine, provider, sink, mirror, playback).await
+}
+
+async fn serve_with_playback(
+    cfg: DaemonConfig,
+    engine: Arc<Engine>,
+    provider: Arc<dyn ReactionProvider>,
+    sink: Arc<dyn AudioSink>,
+    mirror: Arc<dyn Mirror>,
+    playback: PlaybackQueue,
+) -> Result<()> {
+    // `sink` kept in the signature so legacy callers (and the
+    // shutdown-message wording below) remain unchanged. The actual
+    // playback side already moved to `playback`.
+    let _sink = sink;
     // Stale-socket detect.
     if cfg.socket_path.exists() {
         match probe_socket(&cfg.socket_path).await {
@@ -218,11 +263,11 @@ pub async fn serve(
                 };
                 let engine = Arc::clone(&engine);
                 let provider = Arc::clone(&provider);
-                let sink = Arc::clone(&sink);
                 let mirror = Arc::clone(&mirror);
+                let playback = playback.clone();
                 let semaphore = Arc::clone(&semaphore);
                 tokio::spawn(handle_connection(
-                    stream, engine, provider, sink, mirror, semaphore,
+                    stream, engine, provider, mirror, playback, semaphore,
                 ));
             }
             _ = signal::ctrl_c() => {
@@ -246,8 +291,8 @@ async fn handle_connection(
     stream: UnixStream,
     engine: Arc<Engine>,
     provider: Arc<dyn ReactionProvider>,
-    sink: Arc<dyn AudioSink>,
     mirror: Arc<dyn Mirror>,
+    playback: PlaybackQueue,
     semaphore: Arc<Semaphore>,
 ) {
     let (read_half, mut write_half) = stream.into_split();
@@ -290,11 +335,11 @@ async fn handle_connection(
             continue; // ignore blank lines
         }
 
-        let reply = match process_frame(&buf, &engine, &provider, &sink, &mirror, &semaphore).await
-        {
-            Ok(r) => r,
-            Err(e) => Reply::err(format!("{e:#}")),
-        };
+        let reply =
+            match process_frame(&buf, &engine, &provider, &mirror, &playback, &semaphore).await {
+                Ok(r) => r,
+                Err(e) => Reply::err(format!("{e:#}")),
+            };
 
         if let Err(e) = write_reply(&mut write_half, &reply).await {
             // BrokenPipe is normal when the client doesn't read its reply.
@@ -308,72 +353,110 @@ async fn process_frame(
     raw: &[u8],
     engine: &Arc<Engine>,
     provider: &Arc<dyn ReactionProvider>,
-    sink: &Arc<dyn AudioSink>,
     mirror: &Arc<dyn Mirror>,
+    playback: &PlaybackQueue,
     semaphore: &Arc<Semaphore>,
 ) -> Result<Reply> {
     let frame: Frame =
         serde_json::from_slice(raw).context("frame is not valid JSON matching the schema")?;
 
-    let (text, voice) = resolve_text_and_voice(&frame, provider).await?;
+    // Resolve turns synchronously (LLM call happens here for the cast
+    // path; ~500-3000ms). For text-only and single-voice we pay
+    // basically nothing.
+    //
+    // ROADMAP 4.3 Bug 2 fix: when the frame has an explicit `voice`
+    // override, ALWAYS take the single-voice path. Voice override
+    // means "I want one specific voice"; honoring it requires
+    // bypassing the cast lookup.
+    let turns: Vec<(String, String)> = if let Some(text) = frame.text.as_deref() {
+        let voice = frame.voice.clone().unwrap_or_else(|| "default".to_string());
+        vec![(voice, text.to_string())]
+    } else {
+        let event = frame
+            .event
+            .as_deref()
+            .ok_or_else(|| anyhow!("frame must contain either \"event\" or \"text\""))?;
+        match &frame.voice {
+            Some(override_voice) => {
+                // Bypass cast entirely; honor the explicit voice.
+                let (_provider_voice, line) = provider.react(event).await;
+                vec![(override_voice.clone(), line)]
+            }
+            None => provider.react_cast(event).await,
+        }
+    };
 
-    // Mirror the line as a macOS Notification Center banner BEFORE
-    // synthesis so the visual lands at audio-start, not 200-800 ms
-    // later. `mirror.mirror` self-checks `enabled()` and is a cheap
-    // no-op when off; non-macOS builds compile to a no-op too.
-    mirror.mirror(/* voice */ &voice, /* text */ &text);
+    if turns.is_empty() {
+        bail!("provider returned zero turns");
+    }
 
-    // Acquire the permit BEFORE synthesis so a flood doesn't queue up
-    // unbounded synthesis work either.
+    // ROADMAP 4.3 Bug 1 fix: acquire ONE permit for the whole frame,
+    // not per-turn. Per-turn would deadlock under load (8 concurrent
+    // casts × N turns serialize on a cap-8 semaphore). The playback
+    // queue (cap 16) is the audio backpressure mechanism; the
+    // semaphore now caps "in-flight synth" only, which is what its
+    // original intent measured.
     let permit = Arc::clone(semaphore)
         .acquire_owned()
         .await
         .map_err(|e| anyhow!("semaphore closed: {e}"))?;
 
-    let audio_path = engine.speak(&text, &voice).await?;
+    // ROADMAP 4.3 Showstopper 2 fix: option-b sequencing. Build the
+    // reply FROM the resolved turns (we already have the text — no
+    // need to wait for synth) and detach the synth+enqueue work so
+    // the daemon replies fast (within hook-timeout budgets) and
+    // audio plays asynchronously through the queue.
+    //
+    // Mirror calls happen here, BEFORE the spawn, so the banner
+    // ordering across concurrent frames matches reply ordering on
+    // the wire (a detached spawn can't guarantee that). This also
+    // restores the documented "banner lands at audio-start" intent
+    // — mirror was always meant to be sync-cheap.
+    for (voice, text) in &turns {
+        mirror.mirror(/* voice */ voice, /* text */ text);
+    }
 
-    // rodio playback is sync. Move it onto the blocking pool, hand the
-    // permit *into* the closure so it's released when playback ends
-    // (even if the async caller is dropped).
-    let sink_clone = Arc::clone(sink);
-    let path_clone = audio_path.clone();
-    tokio::task::spawn_blocking(move || {
-        let _permit = permit; // dropped on closure exit
-        let result = sink_clone.play(&path_clone);
-        if let Err(e) = result {
-            eprintln!("voiceforge daemon: audio playback failed: {e:#}");
+    let reply = if turns.len() == 1 {
+        let (voice, text) = (turns[0].0.clone(), turns[0].1.clone());
+        Reply::single(text, voice)
+    } else {
+        Reply::cast(turns.clone())
+    };
+
+    // Detach synth+enqueue. The single permit is moved into the task
+    // and dropped at task exit, so the daemon's inflight slot
+    // represents the whole frame (cast or single), not per-turn.
+    // Keeping the per-frame semaphore (cap 8): without it a flood of
+    // frames could spawn unbounded detached tasks each holding an
+    // Arc<Engine> and racing for the engine's internal TokioMutex.
+    let engine = Arc::clone(engine);
+    let playback = playback.clone();
+    tokio::spawn(async move {
+        let _permit = permit; // dropped at task exit
+        for (voice, text) in turns {
+            let audio_path = match engine.speak(&text, &voice).await {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!(
+                        "voiceforge daemon: synth failed for ({voice:?}, {text:?}): {e:#}; aborting remaining turns"
+                    );
+                    return;
+                }
+            };
+            if let Err(e) = playback
+                .push(PlaybackItem {
+                    path: audio_path,
+                    permit: None,
+                })
+                .await
+            {
+                eprintln!("voiceforge daemon: failed to enqueue playback: {e:#}");
+                return;
+            }
         }
     });
 
-    Ok(Reply::ok(text, voice))
-}
-
-/// Pick the (text, voice) pair to actually speak based on the request:
-///
-/// 1. If `text` is set in the request, use it verbatim. Voice = request
-///    voice if set, else "default". Provider is NOT consulted — text
-///    frames always bypass the reaction provider.
-/// 2. Else if `event` is set, dispatch through `provider.react(event)`.
-///    Provider may be Static (rules.json) or Llm (4.1). Voice override
-///    in the request still wins over whatever the provider returned.
-/// 3. Else error: neither field present.
-async fn resolve_text_and_voice(
-    frame: &Frame,
-    provider: &Arc<dyn ReactionProvider>,
-) -> Result<(String, String)> {
-    if let Some(text) = frame.text.as_deref() {
-        let voice = frame.voice.clone().unwrap_or_else(|| "default".to_string());
-        return Ok((text.to_string(), voice));
-    }
-
-    let event = frame
-        .event
-        .as_deref()
-        .ok_or_else(|| anyhow!("frame must contain either \"event\" or \"text\""))?;
-
-    let (provider_voice, text) = provider.react(event).await;
-    let voice = frame.voice.clone().unwrap_or(provider_voice);
-    Ok((text, voice))
+    Ok(reply)
 }
 
 async fn write_reply<W>(writer: &mut W, reply: &Reply) -> std::io::Result<()>
@@ -434,6 +517,39 @@ pub(crate) mod test_support {
             ));
             cmd
         })
+    }
+
+    /// Synth that sleeps before writing the same fake WAV. Used by
+    /// the option-b sequencing test to prove the daemon replies
+    /// BEFORE synth finishes — `fake_synth` is microseconds and
+    /// would pass the test even on the broken pre-fix code.
+    pub(crate) fn slow_synth(delay_ms: u64) -> SynthBuilder {
+        Box::new(move |s| {
+            let out = s.output_aiff_or_wav.to_owned();
+            let mut cmd = tokio::process::Command::new("sh");
+            cmd.arg("-c").arg(format!(
+                "sleep {}; printf 'RIFF\\0\\0\\0\\0WAVEfmt ' > '{}'",
+                (delay_ms as f64) / 1000.0,
+                out.display()
+            ));
+            cmd
+        })
+    }
+
+    /// Like `fixture` but with a slow synth, for option-b timing tests.
+    pub(crate) fn fixture_slow_synth(
+        tmp_root: &Path,
+        delay_ms: u64,
+    ) -> (DaemonConfig, Arc<Engine>, Arc<Rules>, Arc<RecordingSink>) {
+        let socket_path = tmp_root.join("voiceforge.sock");
+        let cfg = DaemonConfig { socket_path };
+        let cache_dir = tmp_root.join("cache");
+        let embedded =
+            EmbeddedEngine::for_testing(cache_dir, Backend::MacosSay, slow_synth(delay_ms));
+        let engine = Arc::new(Engine::for_testing(embedded));
+        let rules = Arc::new(Rules::default_builtin());
+        let sink = Arc::new(RecordingSink::default());
+        (cfg, engine, rules, sink)
     }
 
     /// Build a minimal-but-real Engine + Rules + sink triple for tests.
@@ -952,6 +1068,163 @@ mod tests {
             "text frames must not call the reaction provider; got: {:?}",
             recorder.events()
         );
+
+        handle.abort();
+    }
+
+    // ROADMAP 4.3: prove cast turns play through the playback queue
+    // strictly serially (turn 2 starts AFTER turn 1 ends). Uses a
+    // BlockingRecordingSink with a 50ms delay per play so the
+    // ordering window is large enough to be measurable.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn serve_plays_cast_turns_in_strict_sequence() {
+        use crate::playback::test_support::BlockingRecordingSink;
+        use crate::reaction::test_support::RecordingCastProvider;
+        use std::time::Duration;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (cfg, engine, _rules, _sink) = fixture(tmp.path());
+        let socket = cfg.socket_path.clone();
+
+        // Cast that returns 3 turns.
+        let provider: Arc<dyn ReactionProvider> = Arc::new(RecordingCastProvider::new(vec![
+            ("peter".to_string(), "first".to_string()),
+            ("brian".to_string(), "second".to_string()),
+            ("peter".to_string(), "third".to_string()),
+        ]));
+
+        // 50ms-per-play sink to make sequencing observable.
+        let blocking_sink = Arc::new(BlockingRecordingSink::new(Duration::from_millis(50)));
+        let handle = spawn_serve_with_provider(
+            cfg,
+            engine,
+            provider,
+            blocking_sink.clone() as Arc<dyn AudioSink>,
+            crate::notify_macos::default_mirror(),
+        )
+        .await;
+
+        let reply = send_one(&socket, r#"{"event":"build_failed"}"#).await;
+        assert_eq!(reply["ok"], Value::Bool(true));
+        // Reply uses the cast shape: spoken is an array.
+        let spoken = reply["spoken"].as_array().expect("spoken must be array");
+        assert_eq!(spoken.len(), 3);
+        assert_eq!(spoken[0]["voice"], "peter");
+        assert_eq!(spoken[1]["voice"], "brian");
+        assert_eq!(spoken[2]["voice"], "peter");
+
+        // Wait for queue to drain. 3 × 50ms theoretical, but slow CI
+        // runners need more headroom — poll until all 3 events land
+        // or 5s deadline.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if blocking_sink.events().len() >= 3 || tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let events = blocking_sink.events();
+        assert_eq!(events.len(), 3, "expected 3 plays, got {}", events.len());
+        // Strict ordering: each next play STARTED at or after the
+        // previous play ENDED.
+        for w in events.windows(2) {
+            assert!(
+                w[1].1 >= w[0].2,
+                "cast turn started before previous ended: {w:?}"
+            );
+        }
+
+        handle.abort();
+    }
+
+    // ROADMAP 4.3 Showstopper 2: prove the daemon replies BEFORE the
+    // cast finishes synthesizing (option-b sequencing). Uses
+    // `fixture_slow_synth` which sleeps 200ms per synth call so a
+    // 3-turn cast = 600ms of synth. fake_synth is microseconds and
+    // would pass even on the broken pre-fix code (synth was
+    // synchronous in process_frame); slow_synth is the only way to
+    // prove the daemon doesn't await synth before replying.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn serve_replies_before_cast_audio_finishes() {
+        use crate::reaction::test_support::RecordingCastProvider;
+        use std::time::Duration;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (cfg, engine, _rules, sink) = fixture_slow_synth(tmp.path(), 200);
+        let socket = cfg.socket_path.clone();
+
+        let provider: Arc<dyn ReactionProvider> = Arc::new(RecordingCastProvider::new(vec![
+            ("peter".to_string(), "a".to_string()),
+            ("brian".to_string(), "b".to_string()),
+            ("peter".to_string(), "c".to_string()),
+        ]));
+        let handle = spawn_serve_with_provider(
+            cfg,
+            engine,
+            provider,
+            sink.clone() as Arc<dyn AudioSink>,
+            crate::notify_macos::default_mirror(),
+        )
+        .await;
+
+        let send_started = std::time::Instant::now();
+        let reply = send_one(&socket, r#"{"event":"build_failed"}"#).await;
+        let reply_latency = send_started.elapsed();
+
+        assert_eq!(reply["ok"], Value::Bool(true));
+        // 3 turns × 200ms synth = 600ms total. Reply must come back
+        // in less than ONE turn's synth duration; assert < 150ms
+        // (well under the first turn's 200ms).
+        assert!(
+            reply_latency < Duration::from_millis(150),
+            "reply took {reply_latency:?}; option-b sequencing broken — daemon should reply BEFORE the first synth finishes"
+        );
+
+        handle.abort();
+    }
+
+    // ROADMAP 4.3 Bug 2: explicit voice override on an event with a
+    // configured cast must take the single-voice path (honor the
+    // override). Otherwise users who say "speak in Peter's voice"
+    // get a cast they didn't ask for.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn serve_voice_override_bypasses_cast() {
+        use crate::reaction::test_support::RecordingCastProvider;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (cfg, engine, _rules, sink) = fixture(tmp.path());
+        let socket = cfg.socket_path.clone();
+
+        // Provider returns a 3-turn cast from react_cast, but a
+        // single-turn from react. The override path uses react.
+        let provider: Arc<dyn ReactionProvider> = Arc::new(RecordingCastProvider::new(vec![
+            ("peter".to_string(), "cast-line-1".to_string()),
+            ("brian".to_string(), "cast-line-2".to_string()),
+        ]));
+
+        let handle = spawn_serve_with_provider(
+            cfg,
+            engine,
+            provider,
+            sink.clone() as Arc<dyn AudioSink>,
+            crate::notify_macos::default_mirror(),
+        )
+        .await;
+
+        // Override voice; daemon must use the SINGLE-voice path,
+        // even though react_cast would return 3 turns.
+        let reply = send_one(
+            &socket,
+            r#"{"event":"build_failed","voice":"override_voice"}"#,
+        )
+        .await;
+        assert_eq!(reply["ok"], Value::Bool(true));
+        // Single-voice reply shape (string spoken + voice field).
+        assert!(
+            reply["spoken"].is_string(),
+            "voice override must produce single-voice reply, got: {reply}"
+        );
+        assert_eq!(reply["voice"], "override_voice");
 
         handle.abort();
     }
