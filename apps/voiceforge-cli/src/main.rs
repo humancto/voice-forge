@@ -7,6 +7,7 @@ use std::path::PathBuf;
 mod audio;
 mod audio_sink;
 mod bootstrap;
+mod branding;
 mod cast;
 mod clone;
 mod config;
@@ -526,6 +527,7 @@ async fn main() -> Result<()> {
                 let s = serde_json::to_string_pretty(&report)?;
                 println!("{s}");
             } else {
+                branding::print_brand_header();
                 render_audit_human(&report);
             }
             if report.has_blocker() {
@@ -1315,39 +1317,45 @@ fn remove_voice_cmd(name: &str, force: bool) -> Result<()> {
 /// Human-readable dep audit renderer. Per-dep row + remediation
 /// command for the current OS. Used by `voiceforge audit`.
 fn render_audit_human(report: &dep_audit::DepAuditReport) {
-    println!(
+    let mut out = std::io::stdout().lock();
+    let _ = writeln!(
+        out,
         "voiceforge {} — dependency audit",
         report.voiceforge_version
     );
-    println!();
+    let _ = writeln!(out);
     for dep in &report.deps {
-        let (tag, marker) = match dep.status {
-            dep_audit::DepCheckStatus::Ok => ("[OK]", "✓"),
-            dep_audit::DepCheckStatus::Warn => ("[WARN]", "!"),
-            dep_audit::DepCheckStatus::Error => ("[ERROR]", "✗"),
-        };
         let req = if dep.required { "required" } else { "optional" };
-        println!(
-            "{tag:7}  {marker}  {name:24}  ({req})  {detail}",
+        let text = format!(
+            "{name:24}  ({req})  {detail}",
             name = dep.name,
             detail = dep.detail,
         );
+        let _ = match dep.status {
+            dep_audit::DepCheckStatus::Ok => branding::success_line(&mut out, &text),
+            dep_audit::DepCheckStatus::Warn => branding::warn_line(&mut out, &text),
+            dep_audit::DepCheckStatus::Error => branding::error_line(&mut out, &text),
+        };
         if let Some(rem) = &dep.remediation {
             if let Some(cmd) = rem.for_current_os() {
-                println!("           → fix:  {cmd}");
+                let _ = branding::info_line(&mut out, &format!("fix:  {cmd}"));
             }
         }
     }
-    println!();
-    println!(
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
         "ok: {}  warn: {}  error: {}",
         report.ok_count(),
         report.warn_count(),
         report.error_count(),
     );
     if report.has_blocker() {
-        println!();
-        println!("⚠  one or more REQUIRED dependencies are missing.");
-        println!("   run the suggested `→ fix:` commands above, then re-run `voiceforge audit`.");
+        let _ = writeln!(out);
+        let _ = branding::warn_line(&mut out, "one or more REQUIRED dependencies are missing.");
+        let _ = branding::info_line(
+            &mut out,
+            "run the suggested `fix:` commands above, then re-run `voiceforge audit`.",
+        );
     }
 }

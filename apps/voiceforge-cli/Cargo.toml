@@ -44,6 +44,13 @@ globset = "0.4"
 # Future + Send>> adapter. One Box per call is rounding error against a
 # 500-3000ms LLM round-trip (ROADMAP 4.1).
 async-trait = "0.1.89"
+# ROADMAP v0.4 PR-AB step 5.5 — Tier-1 branding.
+# owo-colors ANSI 24-bit truecolor; `supports-colors` feature enables
+# the `if_supports_color()` adapter which respects NO_COLOR + TTY so
+# we don't need a hand-rolled guard. terminal_size for width detection
+# (degrade big banner to compact under 60 cols).
+owo-colors = { version = "4", features = ["supports-colors"] }
+terminal_size = "0.4"
 
 [dev-dependencies]
 hound = "3"
