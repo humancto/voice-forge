@@ -15,6 +15,7 @@ mod daemon_client;
 mod daemon_server;
 mod dep_audit;
 mod doctor;
+mod embedded_install;
 mod git_hooks;
 mod hook;
 mod ingest;
