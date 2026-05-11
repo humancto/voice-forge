@@ -406,6 +406,16 @@ async fn process_frame(
     // need to wait for synth) and detach the synth+enqueue work so
     // the daemon replies fast (within hook-timeout budgets) and
     // audio plays asynchronously through the queue.
+    //
+    // Mirror calls happen here, BEFORE the spawn, so the banner
+    // ordering across concurrent frames matches reply ordering on
+    // the wire (a detached spawn can't guarantee that). This also
+    // restores the documented "banner lands at audio-start" intent
+    // — mirror was always meant to be sync-cheap.
+    for (voice, text) in &turns {
+        mirror.mirror(/* voice */ voice, /* text */ text);
+    }
+
     let reply = if turns.len() == 1 {
         let (voice, text) = (turns[0].0.clone(), turns[0].1.clone());
         Reply::single(text, voice)
@@ -416,13 +426,14 @@ async fn process_frame(
     // Detach synth+enqueue. The single permit is moved into the task
     // and dropped at task exit, so the daemon's inflight slot
     // represents the whole frame (cast or single), not per-turn.
+    // Keeping the per-frame semaphore (cap 8): without it a flood of
+    // frames could spawn unbounded detached tasks each holding an
+    // Arc<Engine> and racing for the engine's internal TokioMutex.
     let engine = Arc::clone(engine);
-    let mirror = Arc::clone(mirror);
     let playback = playback.clone();
     tokio::spawn(async move {
         let _permit = permit; // dropped at task exit
         for (voice, text) in turns {
-            mirror.mirror(/* voice */ &voice, /* text */ &text);
             let audio_path = match engine.speak(&text, &voice).await {
                 Ok(p) => p,
                 Err(e) => {
@@ -506,6 +517,39 @@ pub(crate) mod test_support {
             ));
             cmd
         })
+    }
+
+    /// Synth that sleeps before writing the same fake WAV. Used by
+    /// the option-b sequencing test to prove the daemon replies
+    /// BEFORE synth finishes — `fake_synth` is microseconds and
+    /// would pass the test even on the broken pre-fix code.
+    pub(crate) fn slow_synth(delay_ms: u64) -> SynthBuilder {
+        Box::new(move |s| {
+            let out = s.output_aiff_or_wav.to_owned();
+            let mut cmd = tokio::process::Command::new("sh");
+            cmd.arg("-c").arg(format!(
+                "sleep {}; printf 'RIFF\\0\\0\\0\\0WAVEfmt ' > '{}'",
+                (delay_ms as f64) / 1000.0,
+                out.display()
+            ));
+            cmd
+        })
+    }
+
+    /// Like `fixture` but with a slow synth, for option-b timing tests.
+    pub(crate) fn fixture_slow_synth(
+        tmp_root: &Path,
+        delay_ms: u64,
+    ) -> (DaemonConfig, Arc<Engine>, Arc<Rules>, Arc<RecordingSink>) {
+        let socket_path = tmp_root.join("voiceforge.sock");
+        let cfg = DaemonConfig { socket_path };
+        let cache_dir = tmp_root.join("cache");
+        let embedded =
+            EmbeddedEngine::for_testing(cache_dir, Backend::MacosSay, slow_synth(delay_ms));
+        let engine = Arc::new(Engine::for_testing(embedded));
+        let rules = Arc::new(Rules::default_builtin());
+        let sink = Arc::new(RecordingSink::default());
+        (cfg, engine, rules, sink)
     }
 
     /// Build a minimal-but-real Engine + Rules + sink triple for tests.
@@ -1094,17 +1138,19 @@ mod tests {
     }
 
     // ROADMAP 4.3 Showstopper 2: prove the daemon replies BEFORE the
-    // cast finishes playing (option-b sequencing). 3 turns × 100ms/play
-    // = 300ms of audio. The reply must arrive in <100ms (well under
-    // the first turn's playback duration).
+    // cast finishes synthesizing (option-b sequencing). Uses
+    // `fixture_slow_synth` which sleeps 200ms per synth call so a
+    // 3-turn cast = 600ms of synth. fake_synth is microseconds and
+    // would pass even on the broken pre-fix code (synth was
+    // synchronous in process_frame); slow_synth is the only way to
+    // prove the daemon doesn't await synth before replying.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn serve_replies_before_cast_audio_finishes() {
-        use crate::playback::test_support::BlockingRecordingSink;
         use crate::reaction::test_support::RecordingCastProvider;
         use std::time::Duration;
 
         let tmp = tempfile::tempdir().expect("tempdir");
-        let (cfg, engine, _rules, _sink) = fixture(tmp.path());
+        let (cfg, engine, _rules, sink) = fixture_slow_synth(tmp.path(), 200);
         let socket = cfg.socket_path.clone();
 
         let provider: Arc<dyn ReactionProvider> = Arc::new(RecordingCastProvider::new(vec![
@@ -1112,12 +1158,11 @@ mod tests {
             ("brian".to_string(), "b".to_string()),
             ("peter".to_string(), "c".to_string()),
         ]));
-        let blocking_sink = Arc::new(BlockingRecordingSink::new(Duration::from_millis(100)));
         let handle = spawn_serve_with_provider(
             cfg,
             engine,
             provider,
-            blocking_sink.clone() as Arc<dyn AudioSink>,
+            sink.clone() as Arc<dyn AudioSink>,
             crate::notify_macos::default_mirror(),
         )
         .await;
@@ -1127,12 +1172,12 @@ mod tests {
         let reply_latency = send_started.elapsed();
 
         assert_eq!(reply["ok"], Value::Bool(true));
-        // Reply must come back well before 3×100ms = 300ms (the
-        // total cast playback duration). Ample budget for slow CI:
-        // assert under 250ms (still strictly < cast duration).
+        // 3 turns × 200ms synth = 600ms total. Reply must come back
+        // in less than ONE turn's synth duration; assert < 150ms
+        // (well under the first turn's 200ms).
         assert!(
-            reply_latency < Duration::from_millis(250),
-            "reply took {reply_latency:?}; option-b sequencing broken — daemon should reply BEFORE audio finishes"
+            reply_latency < Duration::from_millis(150),
+            "reply took {reply_latency:?}; option-b sequencing broken — daemon should reply BEFORE the first synth finishes"
         );
 
         handle.abort();
