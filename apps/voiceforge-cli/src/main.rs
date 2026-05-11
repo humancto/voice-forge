@@ -382,7 +382,7 @@ async fn main() -> Result<()> {
                         eprintln!(
                             "voiceforge: pack {voice:?} matched event {event:?} -- playing pre-rendered WAV"
                         );
-                        audio::play(wav.to_str().unwrap_or(""))?;
+                        audio::play(&wav)?;
                         return Ok(());
                     }
                     Ok(None) => {
@@ -416,7 +416,7 @@ async fn main() -> Result<()> {
             }
             let engine = tts::select_engine()?;
             let audio_path = engine.speak(&text, &voice).await?;
-            audio::play(audio_path.to_str().unwrap_or(""))?;
+            audio::play(&audio_path)?;
         }
         Commands::Run { voice, command } => {
             runner::run_command(command, voice).await?;

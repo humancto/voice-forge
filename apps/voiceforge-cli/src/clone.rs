@@ -37,6 +37,19 @@ pub fn run(name: String, source: String, force: bool) -> Result<()> {
         );
     }
 
+    // PR #29 nit: refuse clone if a PACK with the same name is
+    // already installed. Symmetric to the check in
+    // `packs::install_pack`. `voiceforge say --voice <name>` would
+    // be ambiguous between cloned voice + pack otherwise.
+    if !force && crate::packs::pack_is_installed(&name) {
+        let pack_dir = crate::packs::packs_root()
+            .map(|r| r.join(&name).display().to_string())
+            .unwrap_or_else(|| format!("~/.voiceforge/packs/{name}"));
+        bail!(
+            "cannot clone voice {name:?}: a pack with the same name is already installed at {pack_dir}. Use --force to clone anyway, or `voiceforge pack remove {name}` first."
+        );
+    }
+
     // Resolve the source — local path or URL. The ResolvedSource value
     // MUST stay in scope for the entire Command::status() below; its
     // Drop unlinks the tempdir holding the downloaded WAV.
@@ -182,6 +195,51 @@ aux_count = 5
             assert!(
                 msg.contains("already exists") && msg.contains("--force"),
                 "expected exists+force error, got: {msg}"
+            );
+        });
+    }
+
+    /// PR #29 nit + reviewer follow-up: clone must refuse if a PACK
+    /// with the same name is already installed (symmetric to
+    /// `packs::install_pack` refusing on cloned-voice collision).
+    #[test]
+    #[serial]
+    fn run_errors_when_pack_with_same_name_installed() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("cloning")).unwrap();
+        std::fs::write(
+            tmp.path().join("cloning/INSTALLED.toml"),
+            r#"
+schema_version = 1
+gpt_sovits_sha = "x"
+python_path = "/x"
+ffmpeg6_prefix = "/x"
+"#,
+        )
+        .unwrap();
+        // Stage a fake installed pack at packs/peter/manifest.toml.
+        let pack_dir = tmp.path().join("packs/peter");
+        std::fs::create_dir_all(&pack_dir).unwrap();
+        std::fs::write(
+            pack_dir.join("manifest.toml"),
+            r#"
+schema_version = 1
+name = "peter"
+voice_source = "test"
+source_clip_url = "https://example.invalid/x.mp4"
+reference_prompt_text = "x"
+tier = "character"
+[phrases]
+build_failed = "Sad."
+"#,
+        )
+        .unwrap();
+        with_home(tmp.path(), || {
+            let err = run("peter".into(), "/some/source".into(), false).unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("a pack with the same name") && msg.contains("--force"),
+                "expected pack-collision error, got: {msg}"
             );
         });
     }

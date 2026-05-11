@@ -59,7 +59,7 @@ pub async fn run_command(command: Vec<String>, voice_override: Option<String>) -
 
     let engine = tts::select_engine()?;
     let audio_path = engine.speak(&text, &voice).await?;
-    audio::play(audio_path.to_str().unwrap_or(""))?;
+    audio::play(&audio_path)?;
 
     if !status.success() {
         bail!("Command failed with status: {}", status);

@@ -349,6 +349,14 @@ pub enum InstallError {
     #[error("pack {0:?} already installed; use --force to replace")]
     AlreadyInstalled(String),
 
+    /// Refused install because a CLONED VOICE with the same name
+    /// already exists at `~/.voiceforge/voices/<name>/`. Process exits
+    /// 6 (same category as `AlreadyInstalled` — both are state
+    /// conflicts that the user can resolve with `--force` or by
+    /// removing the colliding artifact). PR #29 nit.
+    #[error("pack name {0:?} collides with an existing cloned voice; use --force to install anyway, or `voiceforge voices remove {0}` first")]
+    NameCollidesWithVoice(String),
+
     /// Concurrent install attempt — `<name>.lock.d` already exists.
     /// Process exits 6.
     #[error("another install of {0:?} is in progress")]
@@ -393,7 +401,9 @@ impl InstallError {
             | InstallError::RequestTimeout(_)
             | InstallError::IndexParse(_) => 3,
             InstallError::Sha256Mismatch { .. } => 4,
-            InstallError::AlreadyInstalled(_) | InstallError::LockHeld(_) => 6,
+            InstallError::AlreadyInstalled(_)
+            | InstallError::LockHeld(_)
+            | InstallError::NameCollidesWithVoice(_) => 6,
             _ => 5,
         }
     }
@@ -707,10 +717,22 @@ pub fn resolve_text_to_event(pack: &str, text: &str) -> InstallResult<Option<Str
         return Ok(Some(needle.to_owned()));
     }
 
+    // PR #29 nit + reviewer follow-up: iterate `phrases_table` in
+    // deterministic event-id order. `phrases_table` is currently a
+    // BTreeMap so its native iter() is already lex-sorted by key —
+    // the explicit collect+sort below is belt-and-suspenders against
+    // a future refactor swapping it for a HashMap (which would
+    // silently break the "lex-first event wins" contract the
+    // `resolve_text_to_event_fuzzy_picks_lexicographically_first`
+    // test defends). Cheap; cold path; runs once per `say --voice
+    // <pack>`.
+    let mut entries: Vec<(&String, &String)> = manifest.phrases_table.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+
     // 2. exact phrase_text match (case-insensitive trimmed).
-    for (event, phrase) in &manifest.phrases_table {
+    for (event, phrase) in &entries {
         if phrase.trim().to_lowercase() == needle_lower {
-            return Ok(Some(event.clone()));
+            return Ok(Some((*event).clone()));
         }
     }
 
@@ -719,10 +741,10 @@ pub fn resolve_text_to_event(pack: &str, text: &str) -> InstallResult<Option<Str
     //    phrase that contains "test").
     let word_count = needle.split_whitespace().count();
     if needle.len() >= 4 && word_count >= 2 {
-        for (event, phrase) in &manifest.phrases_table {
+        for (event, phrase) in &entries {
             let p = phrase.trim().to_lowercase();
             if p.contains(&needle_lower) || needle_lower.contains(&p) {
-                return Ok(Some(event.clone()));
+                return Ok(Some((*event).clone()));
             }
         }
     }
@@ -789,6 +811,14 @@ pub fn remove_pack(name: &str) -> InstallResult<()> {
 /// a corresponding inline comment below.
 pub async fn install_pack(name: &str, force: bool) -> InstallResult<PackEntry> {
     validate_pack_name(name).map_err(|_| InstallError::UnknownPack(name.to_owned()))?;
+
+    // PR #29 nit: refuse install if a CLONED voice with the same name
+    // already exists. `voiceforge say --voice <name>` would otherwise
+    // be ambiguous (pack vs cloned voice — daemon picks one
+    // depending on lookup order). `--force` skips for power users.
+    if !force && crate::voices::voice_exists(name) {
+        return Err(InstallError::NameCollidesWithVoice(name.to_owned()));
+    }
 
     // Step 0a: resolve index, find pack entry.
     let index = fetch_index().await?;
@@ -1361,6 +1391,10 @@ mod tests {
             6
         );
         assert_eq!(InstallError::LockHeld("peter".into()).exit_code(), 6);
+        assert_eq!(
+            InstallError::NameCollidesWithVoice("peter".into()).exit_code(),
+            6
+        );
     }
 
     #[test]
@@ -1853,5 +1887,70 @@ mod tests {
             matches!(err, InstallError::UnknownPack(_)),
             "expected UnknownPack, got {err:?}"
         );
+    }
+
+    /// PR #29 nit + reviewer follow-up: deterministic phrase ordering.
+    /// Two phrases that both fuzzy-match the same needle must
+    /// consistently return the lexicographically-first event_id —
+    /// not whichever HashMap iteration happens to expose first.
+    #[test]
+    #[serial]
+    fn resolve_text_to_event_fuzzy_picks_lexicographically_first() {
+        let tmp = setup_tmp_home();
+        // Both `aaa_event` and `zzz_event` fuzzy-match "compiler chose
+        // violence" (each phrase contains that substring). The needle
+        // is >=4 chars + >=2 words so the fuzzy branch fires.
+        // Lexicographic order picks `aaa_event` deterministically.
+        make_pack_with_manifest(
+            tmp.path(),
+            "test_pack",
+            &[
+                ("zzz_event", "the compiler chose violence again"),
+                ("aaa_event", "yes the compiler chose violence"),
+            ],
+        );
+        // Run multiple times to defeat any HashMap-iteration luck.
+        for _ in 0..20 {
+            let ev = resolve_text_to_event("test_pack", "compiler chose violence")
+                .unwrap()
+                .unwrap();
+            assert_eq!(ev, "aaa_event", "fuzzy match must be deterministic");
+        }
+    }
+
+    /// PR #29 nit + reviewer follow-up: `install_pack` must refuse if
+    /// a CLONED VOICE with the same name already exists, returning
+    /// the dedicated `NameCollidesWithVoice` variant (exit 6) instead
+    /// of `IndexParse` (exit 3 + misleading "pack index parse error"
+    /// prefix in the user-facing message). The collision check fires
+    /// before any network I/O so single-threaded runtime is fine.
+    #[tokio::test]
+    #[serial]
+    async fn install_pack_refuses_when_voice_exists() {
+        let tmp = setup_tmp_home();
+        // Stage a cloned voice profile under voices/peter/.
+        let voice_dir = tmp.path().join("voices/peter");
+        std::fs::create_dir_all(&voice_dir).unwrap();
+        std::fs::write(
+            voice_dir.join("profile.toml"),
+            r#"
+schema_version = 1
+name = "peter"
+source = "x"
+created_at = "2026-05-04T00:00:00Z"
+duration_seconds = 60.0
+recipe = "gpt-sovits-v2-multi-aux-ref"
+aux_count = 5
+"#,
+        )
+        .unwrap();
+        // Try to install pack "peter" without --force.
+        let err = install_pack("peter", false).await.unwrap_err();
+        assert!(
+            matches!(err, InstallError::NameCollidesWithVoice(ref n) if n == "peter"),
+            "expected NameCollidesWithVoice(peter), got {err:?}"
+        );
+        // Exit code must be 6 (replace-required), not 3 (index error).
+        assert_eq!(err.exit_code(), 6);
     }
 }
