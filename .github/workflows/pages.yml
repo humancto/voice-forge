@@ -13,6 +13,8 @@ name: GitHub Pages
 # install.sh is copied into the published tree so the canonical URL
 # `humancto.github.io/voice-forge/install.sh` works alongside the
 # existing `raw.githubusercontent.com/...` URL — both stay supported.
+# GH Pages also avoids raw.githubusercontent.com's installer
+# rate-limits on viral days.
 #
 # Security note: this workflow takes ZERO untrusted input. No
 # `github.event.*` references in `run:` blocks. Triggers on push to
@@ -28,7 +30,10 @@ on:
   workflow_dispatch:
 
 # Single concurrent deploy; in-flight runs supersede each other rather
-# than race on the same artifact.
+# than race on the same artifact. Doesn't conflict with the
+# `github-pages` environment lock — that lock serializes deploys
+# regardless; `cancel-in-progress` just prevents stale builds from
+# queueing.
 concurrency:
   group: pages
   cancel-in-progress: true
@@ -41,6 +46,9 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    # GH Pages deploys can hang in rare API incidents; cap so we don't
+    # burn Actions minutes.
+    timeout-minutes: 10
     steps:
       - name: Checkout
         # Pinned by SHA per CLAUDE.md guidance (matches release-binary.yml).
@@ -55,6 +63,9 @@ jobs:
           cp -R docs/. "$BUILD_DIR/"
           # Co-locate install.sh so `humancto.github.io/voice-forge/install.sh`
           # serves the same script as raw.githubusercontent.com.
+          # If install.sh ever moves or is renamed, update BOTH this
+          # cp line AND the `paths:` filter on the trigger above —
+          # the filter will not catch a path rename in the same commit.
           cp install.sh "$BUILD_DIR/install.sh"
           # Sanity check.
           test -f "$BUILD_DIR/index.html" || { echo "missing index.html"; exit 1; }
@@ -62,6 +73,7 @@ jobs:
           ls -la "$BUILD_DIR" | head -20
 
       - name: Setup Pages
+        # SHA verified against v5.0.0 tag via `gh api`.
         uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
 
       - name: Upload artifact
@@ -72,6 +84,7 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
