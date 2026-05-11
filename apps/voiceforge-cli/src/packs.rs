@@ -717,11 +717,15 @@ pub fn resolve_text_to_event(pack: &str, text: &str) -> InstallResult<Option<Str
         return Ok(Some(needle.to_owned()));
     }
 
-    // PR #29 nit: iterate `phrases_table` in deterministic event-id
-    // order. The table is a HashMap; raw iteration is non-deterministic
-    // so two phrases that both fuzzy-match the needle would alternate
-    // which event "wins" across runs. Sorting by event_id gives a
-    // stable winner (and stable tests).
+    // PR #29 nit + reviewer follow-up: iterate `phrases_table` in
+    // deterministic event-id order. `phrases_table` is currently a
+    // BTreeMap so its native iter() is already lex-sorted by key —
+    // the explicit collect+sort below is belt-and-suspenders against
+    // a future refactor swapping it for a HashMap (which would
+    // silently break the "lex-first event wins" contract the
+    // `resolve_text_to_event_fuzzy_picks_lexicographically_first`
+    // test defends). Cheap; cold path; runs once per `say --voice
+    // <pack>`.
     let mut entries: Vec<(&String, &String)> = manifest.phrases_table.iter().collect();
     entries.sort_by(|a, b| a.0.cmp(b.0));
 
@@ -1918,8 +1922,9 @@ mod tests {
     /// a CLONED VOICE with the same name already exists, returning
     /// the dedicated `NameCollidesWithVoice` variant (exit 6) instead
     /// of `IndexParse` (exit 3 + misleading "pack index parse error"
-    /// prefix in the user-facing message).
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    /// prefix in the user-facing message). The collision check fires
+    /// before any network I/O so single-threaded runtime is fine.
+    #[tokio::test]
     #[serial]
     async fn install_pack_refuses_when_voice_exists() {
         let tmp = setup_tmp_home();
