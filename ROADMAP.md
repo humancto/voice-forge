@@ -52,7 +52,7 @@ Each unchecked item is one PR with tests. Expert agent (auto-detected from stack
 
 - [x] **4.1 `ReactionProvider` trait with `Static` (rules.json) + `Llm` (OpenAI-compatible endpoint via `VOICEFORGE_LLM_URL`). Static is default, LLM falls back to static on failure.**
 - [ ] **4.2 Streaming TTS: `POST /tts/stream` chunked over WebSocket, CLI plays as it arrives via rodio.** _(Deferred post-launch. Reaction lines are 8-12 words and synthesize in ≤800ms; streaming saves ~0ms for the actual use case. Worth doing only if/when 4.3 multi-turn casts produce noticeably long audio. Python server would also need flask-sock + per-sentence model chunking — significant work for negligible launch UX win.)_
-- [ ] **4.3 Multi-voice personality presets: a preset can declare a cast, LLM returns `(voice, line)` tuples played in sequence.**
+- [x] **4.3 Multi-voice personality presets: a preset can declare a cast, LLM returns `(voice, line)` tuples played in sequence.**
 
 ## Phase 5 — Distribution
 
