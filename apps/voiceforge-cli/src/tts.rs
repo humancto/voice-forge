@@ -158,6 +158,58 @@ where
     }
 }
 
+// ============================================================================
+// TtsEngine trait — object-safe synth interface (ROADMAP v0.4 PR-AB step 2)
+// ============================================================================
+
+/// Heap-allocated future returned by `TtsEngine::speak`. Matches the
+/// type `Box::pin(async move { ... })` produces. Send + 'a so it can
+/// be polled across `tokio::spawn` task boundaries when the caller
+/// owns the engine via `Arc<dyn TtsEngine>` and clones owned strings.
+///
+/// Wired into select_engine() in PR-AB step 8 once FishEngine exists.
+#[allow(dead_code)]
+pub type BoxedTtsFuture<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<PathBuf>> + Send + 'a>>;
+
+/// Object-safe synth contract. All v0.4 engines
+/// (`FishEngine`, `CloningEngine`, `EmbeddedEngine`, `ServerEngine`)
+/// implement this so `select_engine()` can return
+/// `Arc<dyn TtsEngine + Send + Sync>` driven by `VOICEFORGE_TTS_ENGINE`.
+///
+/// Returns `BoxFuture` (not `async fn`) explicitly to keep the trait
+/// object-safe with a `+ Send` bound on the returned future. `async fn`
+/// in traits is dyn-compatible on stable 1.85+ but the returned future
+/// defaults to `?Send`, which would block `tokio::spawn` of synth calls.
+/// `async-trait` (used by `ReactionProvider`) is the macro alternative;
+/// we go macro-free here to keep the trait surface explicit.
+///
+/// **Cancel-safety**: dropping the returned future SHOULD cancel the
+/// underlying synth. Implementors that wrap a long-running child
+/// process MUST handle drop-mid-synth gracefully (the child stays
+/// alive; the caller's drop just means "abandon this output").
+///
+/// Wired into select_engine() in PR-AB step 8 once FishEngine exists.
+#[allow(dead_code)]
+pub trait TtsEngine: Send + Sync {
+    /// Synthesize `text` in `voice`, return the path to the written
+    /// WAV in `~/.voiceforge/cache/<sha>.wav`. Cache-hit on second
+    /// call with the same (text, voice, engine_kind, profile.recipe).
+    fn speak<'a>(&'a self, text: &'a str, voice: &'a str) -> BoxedTtsFuture<'a>;
+
+    /// Stable identifier for `voiceforge doctor` and logs. Matches the
+    /// `EngineKind` variant the engine was constructed for.
+    fn engine_kind(&self) -> EngineKind;
+}
+
+// Compile-time assertion that TtsEngine is object-safe. If anyone
+// adds a generic method or `Self` return type to the trait, this fails
+// to compile with a clear error rather than failing at the dyn site.
+#[allow(dead_code)]
+fn _assert_tts_engine_object_safe() {
+    let _check: Option<Box<dyn TtsEngine + Send + Sync>> = None;
+}
+
 #[derive(Debug)]
 pub struct Engine {
     embedded: EmbeddedEngine,
@@ -870,6 +922,106 @@ mod tests {
         for &k in EngineKind::ALL {
             assert_eq!(format!("{k}"), k.as_str());
         }
+    }
+
+    // ============================================================================
+    // TtsEngine trait tests (ROADMAP v0.4 PR-AB step 2)
+    // ============================================================================
+
+    /// Minimal `TtsEngine` impl for trait-shape testing. Records every
+    /// `(text, voice)` it was asked to synthesize; returns a fixed path.
+    /// Future PR-D tests will reuse this for daemon-integration of
+    /// `voiceforge note` without needing the real fish-speech child.
+    pub(crate) struct RecordingTtsEngine {
+        kind: EngineKind,
+        calls: std::sync::Mutex<Vec<(String, String)>>,
+        return_path: PathBuf,
+    }
+
+    impl RecordingTtsEngine {
+        pub(crate) fn new(kind: EngineKind, return_path: PathBuf) -> Self {
+            Self {
+                kind,
+                calls: std::sync::Mutex::new(Vec::new()),
+                return_path,
+            }
+        }
+        pub(crate) fn calls(&self) -> Vec<(String, String)> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl TtsEngine for RecordingTtsEngine {
+        fn speak<'a>(&'a self, text: &'a str, voice: &'a str) -> BoxedTtsFuture<'a> {
+            let path = self.return_path.clone();
+            let text = text.to_string();
+            let voice = voice.to_string();
+            let calls = &self.calls;
+            Box::pin(async move {
+                calls.lock().unwrap().push((text, voice));
+                Ok(path)
+            })
+        }
+        fn engine_kind(&self) -> EngineKind {
+            self.kind
+        }
+    }
+
+    #[test]
+    fn tts_engine_trait_is_object_safe_at_compile_time() {
+        // If TtsEngine becomes non-object-safe (e.g., someone adds a
+        // generic method or `Self` return), this line fails to compile.
+        let _: Box<dyn TtsEngine + Send + Sync> = Box::new(RecordingTtsEngine::new(
+            EngineKind::Embedded,
+            PathBuf::from("/tmp/fake.wav"),
+        ));
+    }
+
+    #[tokio::test]
+    async fn tts_engine_trait_dispatches_via_boxfuture() {
+        let engine: Arc<dyn TtsEngine + Send + Sync> = Arc::new(RecordingTtsEngine::new(
+            EngineKind::FishSpeechS2Pro,
+            PathBuf::from("/tmp/recorded.wav"),
+        ));
+        let path = engine.speak("hello world", "peter").await.unwrap();
+        assert_eq!(path, PathBuf::from("/tmp/recorded.wav"));
+        assert_eq!(engine.engine_kind(), EngineKind::FishSpeechS2Pro);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tts_engine_boxfuture_is_send_can_cross_spawn() {
+        // The BoxFuture must be Send so synth calls can be spawned
+        // onto a multi-thread runtime. Failing this would block
+        // `voiceforge note`'s sequential-chunk synth pattern.
+        let engine: Arc<dyn TtsEngine + Send + Sync> = Arc::new(RecordingTtsEngine::new(
+            EngineKind::FishSpeechS2Pro,
+            PathBuf::from("/tmp/sent.wav"),
+        ));
+        let e2 = Arc::clone(&engine);
+        let handle = tokio::spawn(async move { e2.speak("spawned", "peter").await });
+        let path = handle.await.unwrap().unwrap();
+        assert_eq!(path, PathBuf::from("/tmp/sent.wav"));
+    }
+
+    #[tokio::test]
+    async fn tts_engine_records_each_call_in_order() {
+        let recorder = Arc::new(RecordingTtsEngine::new(
+            EngineKind::FishSpeechS2Pro,
+            PathBuf::from("/tmp/x.wav"),
+        ));
+        let engine: Arc<dyn TtsEngine + Send + Sync> = recorder.clone();
+        engine.speak("first", "peter").await.unwrap();
+        engine.speak("second", "brian").await.unwrap();
+        engine.speak("third", "peter").await.unwrap();
+        let calls = recorder.calls();
+        assert_eq!(
+            calls,
+            vec![
+                ("first".to_string(), "peter".to_string()),
+                ("second".to_string(), "brian".to_string()),
+                ("third".to_string(), "peter".to_string()),
+            ]
+        );
     }
 
     fn shell_escape(s: &str) -> String {
