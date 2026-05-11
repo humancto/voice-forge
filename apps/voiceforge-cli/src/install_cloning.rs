@@ -11,7 +11,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-use crate::paths;
+use crate::install_ui::{self, InstallEngine};
+use crate::{branding, paths};
 
 const MARKER_SCHEMA_VERSION: u32 = 1;
 
@@ -91,34 +92,49 @@ pub fn read_install_state() -> Result<InstallState> {
     Ok(state)
 }
 
-/// Resolve `scripts/install_cloning.sh`. Walks up from
-/// `CARGO_MANIFEST_DIR` for source builds, and from `current_exe()`
-/// for installed binaries.
-fn resolve_script() -> Result<PathBuf> {
+/// Resolve a `scripts/<name>` file. Walks up from `CARGO_MANIFEST_DIR`
+/// for source builds, and from `current_exe()` for installed binaries.
+/// Used to find both `install_cloning.sh` (v1) and `install_cloning_fish.sh` (v2).
+fn resolve_script_named(name: &str) -> Result<PathBuf> {
     if let Some(repo) = paths::repo_config_dir() {
         // repo_config_dir returns <repo>/configs; we want <repo>.
         if let Some(parent) = repo.parent() {
-            let candidate = parent.join("scripts/install_cloning.sh");
+            let candidate = parent.join("scripts").join(name);
             if candidate.is_file() {
                 return Ok(candidate);
             }
         }
     }
     bail!(
-        "could not locate scripts/install_cloning.sh.
+        "could not locate scripts/{name}.
 The cloning installer is shipped with the source checkout. If you installed
-via the binary release, follow the manual steps in docs (ROADMAP 2.1+1.7
-will package this script with the binary)."
+via the binary release, the embedded copy at apps/voiceforge-cli/src/embedded_install.rs
+must be extracted first (PR-AB step 6c will wire that up automatically)."
     )
 }
 
 /// Invoke the install script with the right env vars + stream output.
+///
+/// Engine selection: defaults to fish-speech S2 Pro (v2). Set
+/// `VOICEFORGE_INSTALL_CLONING_ENGINE=gpt-sovits-v2` to use the legacy
+/// v1 path (existing schema-1 voices keep working).
+///
+/// When the engine is v2 AND we're attached to a TTY AND color is on
+/// (per `branding::use_color()`), the install runs through the
+/// indicatif wizard. Otherwise we fall back to plain stdio inheritance
+/// — same behavior as the shipped v1 path. The wizard is cosmetic; the
+/// install recipe must work identically without it.
+///
+/// Branding header (full or compact banner) prints at the very start
+/// of a normal install. Suppressed for `--check` and `--uninstall`
+/// because those are noisy + fast and the banner would be in the way.
 pub fn run(force: bool, check: bool, uninstall: bool) -> Result<()> {
     if [force, check, uninstall].iter().filter(|b| **b).count() > 1 {
         bail!("--force, --check, --uninstall are mutually exclusive");
     }
 
-    let script = resolve_script()?;
+    let engine = install_ui::engine_from_env()?;
+    let script = resolve_script_named(engine.script_filename())?;
     let mode = if check {
         "check"
     } else if uninstall {
@@ -127,23 +143,34 @@ pub fn run(force: bool, check: bool, uninstall: bool) -> Result<()> {
         "normal"
     };
 
+    if mode == "normal" {
+        branding::print_brand_header();
+    }
+
+    let use_wizard =
+        engine == InstallEngine::FishSpeechS2Pro && mode == "normal" && branding::use_color();
+
     let mut cmd = Command::new("bash");
     cmd.arg(&script)
         .env("VOICEFORGE_INSTALL_CLONING_MODE", mode)
         .env(
             "VOICEFORGE_INSTALL_CLONING_FORCE",
             if force { "1" } else { "0" },
-        )
-        .stdin(Stdio::null())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
+        );
 
-    let status = cmd
-        .status()
-        .with_context(|| format!("spawning {}", script.display()))?;
+    let status = if use_wizard {
+        install_ui::run_with_wizard(&mut cmd, engine.approx_phase_count(), engine.human_title())
+            .with_context(|| format!("running install wizard for {}", script.display()))?
+    } else {
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+        cmd.status()
+            .with_context(|| format!("spawning {}", script.display()))?
+    };
 
     if !status.success() {
-        bail!("install_cloning.sh exited non-zero: {status}");
+        bail!("{} exited non-zero: {status}", engine.script_filename());
     }
     Ok(())
 }

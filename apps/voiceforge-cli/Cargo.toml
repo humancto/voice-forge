@@ -51,6 +51,12 @@ async-trait = "0.1.89"
 # (degrade big banner to compact under 60 cols).
 owo-colors = { version = "4", features = ["supports-colors"] }
 terminal_size = "0.4"
+# ROADMAP v0.4 PR-AB step 6b — Tier-2 install wizard.
+# indicatif drives the MultiProgress that the v2 install script's
+# `==> ` phase lines feed into. Same crate the rest of the Rust
+# ecosystem standardizes on for CLI progress; respects NO_COLOR
+# and !TTY automatically (no double-render with our branding gate).
+indicatif = "0.17"
 
 [dev-dependencies]
 hound = "3"
