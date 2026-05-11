@@ -27,6 +27,137 @@ const MAX_TEXT_LEN: usize = 10_000;
 /// Process timeout for any single OS-native TTS subprocess.
 const TTS_TIMEOUT: Duration = Duration::from_secs(30);
 
+// ============================================================================
+// EngineKind — typed selector for the live synth backend (ROADMAP v0.4 PR-AB)
+// ============================================================================
+
+/// The TTS engine voiceforge uses for live (non-pack-rendered) synthesis.
+///
+/// Selected at startup via `VOICEFORGE_TTS_ENGINE`. Default is fish-speech
+/// S2 Pro (studio quality). `gpt-sovits-v2` is opt-in for one release as
+/// the deprecation path; deletes in v0.5. `embedded` (`say`/`espeak-ng`)
+/// is the no-deps fallback used when no cloning runtime is installed.
+///
+/// Strings are single-sourced via [`EngineKind::as_str`] + [`EngineKind::ALL`]
+/// so `FromStr`, `TryFrom<&str>`, and serde `try_from` all agree
+/// automatically when a new variant is added.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EngineKind {
+    /// Fish-speech S2 Pro — studio-quality default, slower (~1.5-2× real-time).
+    /// The 5 shipped packs are pre-rendered with this engine.
+    FishSpeechS2Pro,
+    /// GPT-SoVITS v2 — legacy, opt-in only via env var. Faster but lower
+    /// quality. Removed in v0.5.
+    GptSovitsV2,
+    /// `say` (macOS) / `espeak-ng` (Linux) — no-deps fallback.
+    /// Further dispatched via [`Backend`] to the right OS binary.
+    Embedded,
+}
+
+impl EngineKind {
+    /// Canonical wire-string for the variant. Single source of truth —
+    /// `FromStr`, serde, and CLI `--engine` flag all consult this.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::FishSpeechS2Pro => "fish-speech-s2-pro",
+            Self::GptSovitsV2 => "gpt-sovits-v2",
+            Self::Embedded => "embedded",
+        }
+    }
+
+    /// All known variants. Used by `FromStr` to reject unknown values
+    /// with a helpful "valid: ..." message, and by tests to assert
+    /// every variant round-trips.
+    pub const ALL: &'static [Self] = &[Self::FishSpeechS2Pro, Self::GptSovitsV2, Self::Embedded];
+
+    /// The default engine when `VOICEFORGE_TTS_ENGINE` is unset.
+    /// Studio quality wins by default; legacy + embedded require
+    /// explicit opt-in.
+    pub const DEFAULT: Self = Self::FishSpeechS2Pro;
+}
+
+impl std::fmt::Display for EngineKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for EngineKind {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|k| k.as_str() == s)
+            .ok_or_else(|| {
+                anyhow!(
+                    "unknown engine {s:?}; valid values: {}",
+                    Self::ALL
+                        .iter()
+                        .map(|k| k.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })
+    }
+}
+
+impl TryFrom<&str> for EngineKind {
+    type Error = anyhow::Error;
+    fn try_from(s: &str) -> Result<Self> {
+        s.parse()
+    }
+}
+
+impl TryFrom<String> for EngineKind {
+    type Error = anyhow::Error;
+    fn try_from(s: String) -> Result<Self> {
+        s.parse()
+    }
+}
+
+// serde plumbing — single-sources through TryFrom so adding a variant
+// doesn't require updating a separate `#[serde(rename = "...")]` table.
+impl serde::Serialize for EngineKind {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> std::result::Result<S::Ok, S::Error> {
+        ser.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for EngineKind {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> std::result::Result<Self, D::Error> {
+        let s = String::deserialize(de)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
+}
+
+/// Resolve `VOICEFORGE_TTS_ENGINE` into an `EngineKind`. Hard error on
+/// unknown values (no silent fallback — typos surface immediately
+/// with the valid list). Empty / unset → [`EngineKind::DEFAULT`].
+///
+/// Wired into `select_engine()` in PR-AB step 8 once `FishEngine` exists.
+#[allow(dead_code)]
+pub fn engine_kind_from_env() -> Result<EngineKind> {
+    engine_kind_from_env_with(|k| std::env::var(k).ok())
+}
+
+/// Test-friendly env reader. Same contract as `engine_kind_from_env`.
+pub(crate) fn engine_kind_from_env_with<F>(env: F) -> Result<EngineKind>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    match env("VOICEFORGE_TTS_ENGINE")
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        Some(s) => s
+            .parse::<EngineKind>()
+            .with_context(|| "VOICEFORGE_TTS_ENGINE"),
+        None => Ok(EngineKind::DEFAULT),
+    }
+}
+
 #[derive(Debug)]
 pub struct Engine {
     embedded: EmbeddedEngine,
@@ -588,6 +719,158 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use tokio::process::Command;
+
+    // ============================================================================
+    // EngineKind tests (ROADMAP v0.4 PR-AB step 1)
+    // ============================================================================
+
+    #[test]
+    fn engine_kind_as_str_is_kebab_case_for_every_variant() {
+        for &k in EngineKind::ALL {
+            let s = k.as_str();
+            assert!(!s.is_empty(), "as_str() for {k:?} is empty");
+            assert!(
+                s.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'),
+                "as_str() for {k:?} = {s:?} not kebab-case ascii"
+            );
+        }
+    }
+
+    #[test]
+    fn engine_kind_default_is_fish_speech() {
+        assert_eq!(EngineKind::DEFAULT, EngineKind::FishSpeechS2Pro);
+    }
+
+    #[test]
+    fn engine_kind_fromstr_roundtrips_every_variant() {
+        for &k in EngineKind::ALL {
+            let s = k.as_str();
+            let parsed: EngineKind = s.parse().expect("variant string must parse");
+            assert_eq!(parsed, k, "round-trip mismatch for {k:?}");
+        }
+    }
+
+    #[test]
+    fn engine_kind_fromstr_rejects_unknown_with_helpful_message() {
+        let err = "fishspeech".parse::<EngineKind>().unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("unknown engine"), "got: {msg}");
+        assert!(msg.contains("\"fishspeech\""), "got: {msg}");
+        // Lists every valid value
+        for &k in EngineKind::ALL {
+            assert!(
+                msg.contains(k.as_str()),
+                "valid-list missing {:?}, got: {msg}",
+                k.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn engine_kind_fromstr_rejects_empty_uppercase_whitespace() {
+        assert!("".parse::<EngineKind>().is_err());
+        assert!("FISH-SPEECH-S2-PRO".parse::<EngineKind>().is_err());
+        assert!(" fish-speech-s2-pro".parse::<EngineKind>().is_err());
+        assert!("fish-speech-s2-pro\n".parse::<EngineKind>().is_err());
+    }
+
+    #[test]
+    fn engine_kind_serde_roundtrips_every_variant() {
+        for &k in EngineKind::ALL {
+            let json = serde_json::to_string(&k).unwrap();
+            // Stringly-encoded — wire format matches as_str()
+            assert_eq!(json, format!("\"{}\"", k.as_str()));
+            let back: EngineKind = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, k);
+        }
+    }
+
+    #[test]
+    fn engine_kind_serde_rejects_unknown_value() {
+        let r: serde_json::Result<EngineKind> = serde_json::from_str(r#""nope""#);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn engine_kind_tryfrom_str_and_string_match_fromstr() {
+        for &k in EngineKind::ALL {
+            let s = k.as_str();
+            let from_ref: EngineKind = TryFrom::try_from(s).unwrap();
+            let from_owned: EngineKind = TryFrom::try_from(s.to_string()).unwrap();
+            assert_eq!(from_ref, k);
+            assert_eq!(from_owned, k);
+        }
+    }
+
+    #[test]
+    fn engine_kind_from_env_unset_returns_default() {
+        let kind = engine_kind_from_env_with(|_| None).unwrap();
+        assert_eq!(kind, EngineKind::DEFAULT);
+    }
+
+    #[test]
+    fn engine_kind_from_env_empty_returns_default() {
+        let kind = engine_kind_from_env_with(|k| {
+            if k == "VOICEFORGE_TTS_ENGINE" {
+                Some(String::new())
+            } else {
+                None
+            }
+        })
+        .unwrap();
+        assert_eq!(kind, EngineKind::DEFAULT);
+    }
+
+    #[test]
+    fn engine_kind_from_env_whitespace_treated_as_empty() {
+        let kind = engine_kind_from_env_with(|k| {
+            if k == "VOICEFORGE_TTS_ENGINE" {
+                Some("   ".to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap();
+        assert_eq!(kind, EngineKind::DEFAULT);
+    }
+
+    #[test]
+    fn engine_kind_from_env_each_valid_value() {
+        for &k in EngineKind::ALL {
+            let kind = engine_kind_from_env_with(|key| {
+                if key == "VOICEFORGE_TTS_ENGINE" {
+                    Some(k.as_str().to_string())
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+            assert_eq!(kind, k);
+        }
+    }
+
+    #[test]
+    fn engine_kind_from_env_invalid_value_hard_errors_with_var_name() {
+        let err = engine_kind_from_env_with(|k| {
+            if k == "VOICEFORGE_TTS_ENGINE" {
+                Some("fishspeech".to_string())
+            } else {
+                None
+            }
+        })
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("VOICEFORGE_TTS_ENGINE"), "got: {msg}");
+        assert!(msg.contains("unknown engine"), "got: {msg}");
+    }
+
+    #[test]
+    fn engine_kind_display_matches_as_str() {
+        for &k in EngineKind::ALL {
+            assert_eq!(format!("{k}"), k.as_str());
+        }
+    }
 
     fn shell_escape(s: &str) -> String {
         format!("'{}'", s.replace('\'', "'\\''"))
