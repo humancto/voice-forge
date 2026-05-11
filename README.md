@@ -282,6 +282,8 @@ test result: FAILED. 3 passed; 1 failed
 🔊  "Roads? Where we're going we don't need... oh wait, the test failed."
 ```
 
+📖 **Project site:** https://humancto.github.io/voice-forge/ — install steps, capability tour, architecture diagram. Also serves the install script: `curl -fsSL https://humancto.github.io/voice-forge/install.sh | bash` works alongside the canonical `raw.githubusercontent.com` URL.
+
 ## Quick start
 
 **Step 1 — install the binary.** Two paths, same binary:
