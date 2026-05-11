@@ -285,9 +285,10 @@ impl LlmProvider {
     }
 
     /// Unified prompt builder. `turns == 1` produces the single-voice
-    /// shape; `turns > 1` produces the cast shape. The model is asked
-    /// for the same JSON envelope either way (always an array; daemon
-    /// takes the first element for single-voice).
+    /// shape; `turns > 1` produces the cast shape. Always wrapped in
+    /// a top-level object `{"turns": [...]}` because OpenAI's
+    /// `response_format: json_object` mode REJECTS top-level arrays
+    /// (would brick the README's demo path).
     pub(crate) fn build_prompt(event: &str, turns: u8, allowed: &[String]) -> String {
         let voices = allowed.join(", ");
         let count_clause = if turns == 1 {
@@ -302,8 +303,9 @@ quips when developer events happen. The user just hit event=\"{event}\". \
 (8-12 words, present tense, in character, no markdown, no emoji, max 200 \
 characters per line).\n\n\
 Voices: {voices}\n\n\
-Respond with raw JSON only, no prose, ALWAYS as a JSON array even for one turn:\n\
-[\n  {{\"voice\": \"<one of the voices>\", \"line\": \"<line>\"}}\n]"
+Respond with raw JSON only (no prose) as a top-level OBJECT with a \
+\"turns\" array. The shape is the same whether you produce one turn or many:\n\
+{{\"turns\": [\n  {{\"voice\": \"<one of the voices>\", \"line\": \"<line>\"}}\n]}}"
         )
     }
 
@@ -497,25 +499,48 @@ fn normalize_voice(v: &str) -> String {
     v.trim().to_lowercase().replace('-', "_")
 }
 
+#[derive(Debug, Deserialize)]
+struct TurnsEnvelope {
+    turns: Vec<LlmDirect>,
+}
+
 /// Always returns a `Vec<LlmDirect>`. Length-1 = single-voice; length-N
 /// = cast. Try-order is deterministic:
-///   1. JSON array of LlmDirect → cast (or single in array form)
-///   2. JSON object LlmDirect → wrap in vec
-///   3. OpenAI envelope → recurse on `choices[0].message.content`
+///   1. `{"turns": [{...},...]}` (the prompt's preferred shape; what
+///      OpenAI's `response_format: json_object` produces)
+///   2. Bare `[{...},...]` array (some endpoints relax json_object)
+///   3. Bare `{voice, line}` (legacy single-voice shape)
+///   4. OpenAI chat envelope → descend ONCE through
+///      `choices[0].message.content` (bound recursion to prevent stack
+///      overflow on adversarial nested envelopes)
 fn parse_response(body: &str) -> Result<Vec<LlmDirect>> {
+    parse_response_inner(body, 1)
+}
+
+fn parse_response_inner(body: &str, envelope_descents_remaining: u8) -> Result<Vec<LlmDirect>> {
+    if let Ok(env) = serde_json::from_str::<TurnsEnvelope>(body) {
+        if !env.turns.is_empty() {
+            return Ok(env.turns);
+        }
+    }
     if let Ok(v) = serde_json::from_str::<Vec<LlmDirect>>(body) {
         return Ok(v);
     }
     if let Ok(d) = serde_json::from_str::<LlmDirect>(body) {
         return Ok(vec![d]);
     }
-    if let Ok(envelope) = serde_json::from_str::<OpenAiEnvelope>(body) {
-        if let Some(choice) = envelope.choices.first() {
-            return parse_response(&choice.message.content);
+    if envelope_descents_remaining > 0 {
+        if let Ok(envelope) = serde_json::from_str::<OpenAiEnvelope>(body) {
+            if let Some(choice) = envelope.choices.first() {
+                return parse_response_inner(
+                    &choice.message.content,
+                    envelope_descents_remaining - 1,
+                );
+            }
         }
     }
     Err(anyhow!(
-        "response did not match [LlmDirect], LlmDirect, or OpenAI envelope"
+        "response did not match {{turns:[...]}}, [LlmDirect], LlmDirect, or OpenAI envelope"
     ))
 }
 
@@ -752,6 +777,59 @@ mod tests {
         let body = r#"{"choices":[{"message":{"content":"[{\"voice\":\"peter\",\"line\":\"hi\"},{\"voice\":\"brian\",\"line\":\"sup\"}]"}}]}"#;
         let p = parse_response(body).unwrap();
         assert_eq!(p.len(), 2);
+    }
+
+    #[test]
+    fn parse_turns_envelope_object_shape() {
+        // OpenAI's response_format=json_object requires a top-level
+        // object — this is the canonical shape build_prompt asks for.
+        let body = r#"{"turns":[{"voice":"peter","line":"hi"},{"voice":"brian","line":"sup"}]}"#;
+        let p = parse_response(body).unwrap();
+        assert_eq!(p.len(), 2);
+        assert_eq!(p[0].voice, "peter");
+        assert_eq!(p[1].voice, "brian");
+    }
+
+    #[test]
+    fn parse_openai_envelope_with_turns_object_content() {
+        // The full real-world chain: OpenAI envelope wrapping a
+        // {"turns":[...]} object as the inner JSON string. This is
+        // what gpt-4o-mini with response_format=json_object actually
+        // returns for the build_prompt cast path.
+        let body = r#"{"choices":[{"message":{"content":"{\"turns\":[{\"voice\":\"peter\",\"line\":\"a\"},{\"voice\":\"brian\",\"line\":\"b\"}]}"}}]}"#;
+        let p = parse_response(body).unwrap();
+        assert_eq!(p.len(), 2);
+        assert_eq!(p[0].voice, "peter");
+        assert_eq!(p[1].voice, "brian");
+    }
+
+    #[test]
+    fn parse_response_recursion_bounded_against_nested_envelope() {
+        // Adversarial: nested OpenAI envelope inside an OpenAI
+        // envelope. Bounded recursion should reject (only descend
+        // through `choices[0].message.content` ONCE).
+        let inner = r#"{\"choices\":[{\"message\":{\"content\":\"{\\\"voice\\\":\\\"peter\\\",\\\"line\\\":\\\"x\\\"}\"}}]}"#;
+        let body = format!(r#"{{"choices":[{{"message":{{"content":"{inner}"}}}}]}}"#);
+        // After one descent we land on the inner envelope's JSON
+        // text, which is itself a {"choices":...} object — that
+        // shouldn't match LlmDirect / [LlmDirect] / TurnsEnvelope,
+        // and the bound prevents another descent. Reject.
+        assert!(parse_response(&body).is_err());
+    }
+
+    #[test]
+    fn cast_prompt_includes_only_cast_voices() {
+        // The cast voice menu must NOT leak the global voice list.
+        let cast_voices = vec!["peter".to_string(), "brian".to_string()];
+        let prompt = LlmProvider::build_prompt("build_failed", 3, &cast_voices);
+        assert!(prompt.contains("peter"));
+        assert!(prompt.contains("brian"));
+        // A voice NOT in the cast must not appear:
+        assert!(!prompt.contains("trump"));
+        assert!(!prompt.contains("musk"));
+        assert!(!prompt.contains("angry_duck"));
+        // Top-level object shape so OpenAI json_object accepts it:
+        assert!(prompt.contains(r#""turns""#));
     }
 
     #[test]

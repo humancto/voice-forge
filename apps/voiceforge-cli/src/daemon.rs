@@ -34,7 +34,7 @@ pub async fn run() -> Result<()> {
     // provider is StaticProvider — casts only fire through the LLM.
     if !casts.is_empty() && provider.name() == "static" {
         eprintln!(
-            "voiceforge: {} cast(s) configured but no LLM provider — set VOICEFORGE_LLM_URL to enable, or remove casts.toml",
+            "voiceforge: {} cast(s) configured but no LLM provider — set VOICEFORGE_LLM_URL and restart the daemon to enable, or remove casts.toml",
             casts.len()
         );
     }

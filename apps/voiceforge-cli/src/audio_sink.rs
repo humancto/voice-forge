@@ -11,6 +11,11 @@ use anyhow::Result;
 use std::path::Path;
 
 pub trait AudioSink: Send + Sync {
+    /// Blocks until playback finishes. Implementations MUST NOT
+    /// return early. The PlaybackQueue (ROADMAP 4.3) relies on this
+    /// contract to serialize cast turns — if `play` returned before
+    /// the audio actually finished, turn-2 would start while turn-1
+    /// was still audible.
     fn play(&self, wav_path: &Path) -> Result<()>;
 }
 

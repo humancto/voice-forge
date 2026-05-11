@@ -52,9 +52,13 @@ const QUEUE_CAPACITY: usize = 16;
 
 pub struct PlaybackItem {
     pub path: PathBuf,
-    /// Held until `play` returns. Drop releases the daemon's inflight
-    /// slot for the next event.
-    pub permit: OwnedSemaphorePermit,
+    /// Optional. When `Some`, held until `play` returns and dropped
+    /// then. Used by callers that want inflight accounting at the
+    /// per-item granularity. ROADMAP 4.3's daemon now holds a
+    /// per-frame permit across the cast loop instead, so it passes
+    /// `None` here — the queue's bounded channel is the real
+    /// backpressure mechanism.
+    pub permit: Option<OwnedSemaphorePermit>,
 }
 
 #[derive(Clone)]
@@ -76,7 +80,7 @@ impl PlaybackQueue {
                 // FIFO — the next iteration of the recv loop only
                 // starts after this play completes.
                 let join = tokio::task::spawn_blocking(move || {
-                    let _permit = item.permit; // dropped after play
+                    let _permit = item.permit; // Some(p) dropped after play; None is no-op
                     if let Err(e) = sink.play(&item.path) {
                         eprintln!(
                             "voiceforge: playback failed for {}: {e:#}",
@@ -199,7 +203,7 @@ mod tests {
             queue
                 .push(PlaybackItem {
                     path: PathBuf::from(format!("/tmp/{i}.wav")),
-                    permit: perm(),
+                    permit: Some(perm()),
                 })
                 .await
                 .expect("push");
@@ -229,7 +233,7 @@ mod tests {
             queue
                 .push(PlaybackItem {
                     path: PathBuf::from(format!("/tmp/{i}.wav")),
-                    permit: perm(),
+                    permit: Some(perm()),
                 })
                 .await
                 .expect("push");
@@ -261,8 +265,23 @@ mod tests {
         let _ = queue
             .push(PlaybackItem {
                 path: PathBuf::from("/tmp/x.wav"),
-                permit: perm(),
+                permit: Some(perm()),
             })
             .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn push_with_none_permit_plays_normally() {
+        let sink = Arc::new(BlockingRecordingSink::new(Duration::from_millis(5)));
+        let queue = PlaybackQueue::spawn(sink.clone() as Arc<dyn AudioSink>);
+        queue
+            .push(PlaybackItem {
+                path: PathBuf::from("/tmp/no_permit.wav"),
+                permit: None,
+            })
+            .await
+            .expect("push");
+        let events = wait_for_events(&sink, 1, Duration::from_secs(2)).await;
+        assert_eq!(events.len(), 1);
     }
 }
