@@ -13,6 +13,7 @@ mod config;
 mod daemon;
 mod daemon_client;
 mod daemon_server;
+mod dep_audit;
 mod doctor;
 mod git_hooks;
 mod hook;
@@ -196,6 +197,19 @@ enum Commands {
     /// audio backend, embedded TTS, optional Python server, cache,
     /// presets, and ffmpeg.
     Doctor {
+        /// Output as JSON for tooling. Schema is versioned via
+        /// `schema_version` and currently at 1.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Audit voiceforge's external dependencies (brew/apt packages,
+    /// Python runtime, model weights, ffmpeg, yt-dlp, etc.) and show
+    /// remediation commands for anything missing.
+    ///
+    /// Consumed by `doctor` + `install-cloning`; humans run it to
+    /// debug "why doesn't this work" without diving into the install
+    /// script.
+    Audit {
         /// Output as JSON for tooling. Schema is versioned via
         /// `schema_version` and currently at 1.
         #[arg(long)]
@@ -501,6 +515,18 @@ async fn main() -> Result<()> {
                 doctor::render_human(&report, &mut out)?;
             }
             if report.has_error() {
+                std::process::exit(1);
+            }
+        }
+        Commands::Audit { json } => {
+            let report = dep_audit::audit_dependencies();
+            if json {
+                let s = serde_json::to_string_pretty(&report)?;
+                println!("{s}");
+            } else {
+                render_audit_human(&report);
+            }
+            if report.has_blocker() {
                 std::process::exit(1);
             }
         }
@@ -1282,4 +1308,44 @@ fn remove_voice_cmd(name: &str, force: bool) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Human-readable dep audit renderer. Per-dep row + remediation
+/// command for the current OS. Used by `voiceforge audit`.
+fn render_audit_human(report: &dep_audit::DepAuditReport) {
+    println!(
+        "voiceforge {} — dependency audit",
+        report.voiceforge_version
+    );
+    println!();
+    for dep in &report.deps {
+        let (tag, marker) = match dep.status {
+            dep_audit::DepCheckStatus::Ok => ("[OK]", "✓"),
+            dep_audit::DepCheckStatus::Warn => ("[WARN]", "!"),
+            dep_audit::DepCheckStatus::Error => ("[ERROR]", "✗"),
+        };
+        let req = if dep.required { "required" } else { "optional" };
+        println!(
+            "{tag:7}  {marker}  {name:24}  ({req})  {detail}",
+            name = dep.name,
+            detail = dep.detail,
+        );
+        if let Some(rem) = &dep.remediation {
+            if let Some(cmd) = rem.for_current_os() {
+                println!("           → fix:  {cmd}");
+            }
+        }
+    }
+    println!();
+    println!(
+        "ok: {}  warn: {}  error: {}",
+        report.ok_count(),
+        report.warn_count(),
+        report.error_count(),
+    );
+    if report.has_blocker() {
+        println!();
+        println!("⚠  one or more REQUIRED dependencies are missing.");
+        println!("   run the suggested `→ fix:` commands above, then re-run `voiceforge audit`.");
+    }
 }
