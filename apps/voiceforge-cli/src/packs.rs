@@ -707,10 +707,18 @@ pub fn resolve_text_to_event(pack: &str, text: &str) -> InstallResult<Option<Str
         return Ok(Some(needle.to_owned()));
     }
 
+    // PR #29 nit: iterate `phrases_table` in deterministic event-id
+    // order. The table is a HashMap; raw iteration is non-deterministic
+    // so two phrases that both fuzzy-match the needle would alternate
+    // which event "wins" across runs. Sorting by event_id gives a
+    // stable winner (and stable tests).
+    let mut entries: Vec<(&String, &String)> = manifest.phrases_table.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+
     // 2. exact phrase_text match (case-insensitive trimmed).
-    for (event, phrase) in &manifest.phrases_table {
+    for (event, phrase) in &entries {
         if phrase.trim().to_lowercase() == needle_lower {
-            return Ok(Some(event.clone()));
+            return Ok(Some((*event).clone()));
         }
     }
 
@@ -719,10 +727,10 @@ pub fn resolve_text_to_event(pack: &str, text: &str) -> InstallResult<Option<Str
     //    phrase that contains "test").
     let word_count = needle.split_whitespace().count();
     if needle.len() >= 4 && word_count >= 2 {
-        for (event, phrase) in &manifest.phrases_table {
+        for (event, phrase) in &entries {
             let p = phrase.trim().to_lowercase();
             if p.contains(&needle_lower) || needle_lower.contains(&p) {
-                return Ok(Some(event.clone()));
+                return Ok(Some((*event).clone()));
             }
         }
     }
@@ -789,6 +797,17 @@ pub fn remove_pack(name: &str) -> InstallResult<()> {
 /// a corresponding inline comment below.
 pub async fn install_pack(name: &str, force: bool) -> InstallResult<PackEntry> {
     validate_pack_name(name).map_err(|_| InstallError::UnknownPack(name.to_owned()))?;
+
+    // PR #29 nit: refuse install if a CLONED voice with the same name
+    // already exists. `voiceforge say --voice <name>` would otherwise
+    // be ambiguous (pack vs cloned voice — daemon picks one
+    // depending on lookup order). Force=true skips the check for
+    // power users who know what they're doing.
+    if !force && crate::voices::voice_exists(name) {
+        return Err(InstallError::IndexParse(format!(
+            "cannot install pack {name:?}: a cloned voice with the same name already exists at ~/.voiceforge/voices/{name}/. Use --force to install anyway, or `voiceforge voices remove {name}` first."
+        )));
+    }
 
     // Step 0a: resolve index, find pack entry.
     let index = fetch_index().await?;

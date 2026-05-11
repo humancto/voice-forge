@@ -37,6 +37,16 @@ pub fn run(name: String, source: String, force: bool) -> Result<()> {
         );
     }
 
+    // PR #29 nit: refuse clone if a PACK with the same name is
+    // already installed. Symmetric to the check in
+    // `packs::install_pack`. `voiceforge say --voice <name>` would
+    // be ambiguous between cloned voice + pack otherwise.
+    if !force && crate::packs::pack_is_installed(&name) {
+        bail!(
+            "cannot clone voice {name:?}: a pack with the same name is already installed at ~/.voiceforge/packs/{name}/. Use --force to clone anyway, or `voiceforge pack remove {name}` first."
+        );
+    }
+
     // Resolve the source — local path or URL. The ResolvedSource value
     // MUST stay in scope for the entire Command::status() below; its
     // Drop unlinks the tempdir holding the downloaded WAV.

@@ -24,6 +24,6 @@ pub struct RodioSink;
 
 impl AudioSink for RodioSink {
     fn play(&self, wav_path: &Path) -> Result<()> {
-        crate::audio::play(wav_path.to_str().unwrap_or(""))
+        crate::audio::play(wav_path)
     }
 }
