@@ -1,0 +1,81 @@
+name: GitHub Pages
+
+# ROADMAP 5.1 phase 1: serve docs/ + install.sh from
+# https://humancto.github.io/voice-forge/. The dedicated voiceforge.sh
+# domain on Cloudflare Pages is queued as 5.1.1 — needs Cloudflare
+# account + DNS access to provision.
+#
+# After this workflow merges to main:
+#   1. Settings → Pages → Source: "GitHub Actions"
+#   2. First push to main triggers the deploy
+#   3. Site live at humancto.github.io/voice-forge/
+#
+# install.sh is copied into the published tree so the canonical URL
+# `humancto.github.io/voice-forge/install.sh` works alongside the
+# existing `raw.githubusercontent.com/...` URL — both stay supported.
+#
+# Security note: this workflow takes ZERO untrusted input. No
+# `github.event.*` references in `run:` blocks. Triggers on push to
+# main (already trusted) plus workflow_dispatch.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "install.sh"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+# Single concurrent deploy; in-flight runs supersede each other rather
+# than race on the same artifact.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        # Pinned by SHA per CLAUDE.md guidance (matches release-binary.yml).
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+
+      - name: Assemble site
+        run: |
+          set -euo pipefail
+          BUILD_DIR=_site
+          mkdir -p "$BUILD_DIR"
+          # Copy docs/ contents to root of the published site.
+          cp -R docs/. "$BUILD_DIR/"
+          # Co-locate install.sh so `humancto.github.io/voice-forge/install.sh`
+          # serves the same script as raw.githubusercontent.com.
+          cp install.sh "$BUILD_DIR/install.sh"
+          # Sanity check.
+          test -f "$BUILD_DIR/index.html" || { echo "missing index.html"; exit 1; }
+          test -f "$BUILD_DIR/install.sh" || { echo "missing install.sh"; exit 1; }
+          ls -la "$BUILD_DIR" | head -20
+
+      - name: Setup Pages
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
