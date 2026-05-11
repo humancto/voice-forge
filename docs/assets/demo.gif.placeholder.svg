@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 405" width="720" height="405" role="img" aria-label="VoiceForge demo placeholder">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0a0e1a"/>
+      <stop offset="100%" stop-color="#1a1f2e"/>
+    </linearGradient>
+  </defs>
+  <rect width="720" height="405" fill="url(#bg)"/>
+  <g font-family="ui-monospace, SF Mono, Menlo, monospace" fill="#a0e8b0" font-size="14">
+    <text x="40" y="60">$ voiceforge daemon &amp;; disown</text>
+    <text x="40" y="90">$ voiceforge pack install peter</text>
+    <text x="40" y="120">$ voiceforge run -- npm test</text>
+    <text x="40" y="150" fill="#ff6b6b">  → exit code 1</text>
+    <text x="40" y="200" fill="#ffd966" font-size="22">🔊  "Holy crap Lois, the build is on fire!"</text>
+  </g>
+  <g font-family="ui-sans-serif, system-ui, sans-serif" fill="#7a8294" font-size="13">
+    <text x="40" y="350">[ placeholder — record a 30s screen+audio capture and replace as docs/assets/demo.gif ]</text>
+    <text x="40" y="372">[ QuickTime → New Screen Recording → output → trim → gifski input.mp4 -o demo.gif ]</text>
+  </g>
+  <g font-family="ui-sans-serif, system-ui, sans-serif" fill="#a0a8bc" font-size="18" font-weight="600">
+    <text x="40" y="270">VoiceForge — your terminal, in any voice you clone.</text>
+  </g>
+</svg>

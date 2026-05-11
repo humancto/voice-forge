@@ -5,6 +5,22 @@
   <em>Build fails? Peter Griffin yells at you. Tests pass? Trump says they're tremendous. Local-first. No cloud. No accounts.</em>
 </p>
 
+<!--
+  PH launch hero asset. The SVG below is a placeholder — record a
+  30s screen+audio capture, drop it at docs/assets/demo.gif, and
+  change the `src` from `demo.gif.placeholder.svg` to `demo.gif`.
+
+  Recommended capture: voiceforge daemon up, voiceforge pack install
+  peter, voiceforge run -- some-failing-cmd, hear Peter Griffin react.
+  QuickTime → File → New Screen Recording → "Audio: Built-in
+  Microphone" + system audio (BlackHole/Loopback) → trim → gifski.
+-->
+<p align="center">
+  <a href="https://humancto.github.io/voice-forge/">
+    <img alt="VoiceForge demo (placeholder — record one and drop at docs/assets/demo.gif)" src="docs/assets/demo.gif.placeholder.svg" width="720">
+  </a>
+</p>
+
 <p align="center">
   <a href="https://humancto.github.io/voice-forge/"><strong>website</strong></a> ·
   <a href="#quick-start">quick start</a> ·
@@ -42,7 +58,7 @@ Six real flows, all live on `main`. Each one ships, has tests, and works on `voi
 ### 1. Hear celebrity voices react to your terminal — zero model install
 
 ```bash
-brew tap humancto/voiceforge && brew install voiceforge          # or: curl install.sh | bash
+curl -fsSL https://humancto.github.io/voice-forge/install.sh | bash    # or: brew tap humancto/voiceforge && brew install voiceforge
 voiceforge daemon &; disown
 voiceforge pack install trump
 voiceforge say --voice trump --text "build_failed"               # plays pre-rendered WAV in ~50 ms
@@ -286,20 +302,22 @@ test result: FAILED. 3 passed; 1 failed
 
 ## Quick start
 
-**Step 1 — install the binary.** Two paths, same binary:
+**Step 1 — install the binary.** Two paths, same binary. Curl is recommended for first-time installs because it auto-strips the macOS Gatekeeper quarantine bit; the Homebrew binary is currently unsigned (notarization queued as ROADMAP 5.2.1) and triggers an "Apple cannot verify" dialog on first launch.
 
 ```bash
-# macOS via Homebrew (auto-tracks new releases via brew upgrade):
+# Universal installer (curl | bash, ~5 seconds, all 4 platforms, no Gatekeeper friction):
+curl -fsSL https://humancto.github.io/voice-forge/install.sh | bash
+
+# Or macOS via Homebrew (auto-tracks new releases via `brew upgrade`):
 brew tap humancto/voiceforge
 brew install voiceforge
-
-# Or universal installer (curl | bash, ~5 seconds, all 4 platforms):
-curl -fsSL https://raw.githubusercontent.com/humancto/voice-forge/main/install.sh | bash
 
 voiceforge say --text "VoiceForge is ready"
 ```
 
 The installer fetches a prebuilt binary for `darwin-arm64`, `darwin-x86_64`, `linux-x86_64`, or `linux-aarch64` (glibc ≥ 2.35) from the [latest release](https://github.com/humancto/voice-forge/releases/latest), sha256-verifies, and installs to `/usr/local/bin/voiceforge` (or `~/.local/bin` if `/usr/local` isn't writable). Falls through to a from-source build only on unsupported platforms or download failure.
+
+The `humancto.github.io` URL above and the equivalent `https://raw.githubusercontent.com/humancto/voice-forge/main/install.sh` both serve the same script — pick whichever you prefer. GitHub Pages avoids the raw-URL installer rate limits if voiceforge ever goes viral.
 
 That alone gets you `voiceforge run -- <cmd>` reactions in the OS default voice (`say` on macOS, `espeak-ng` on Linux), plus the entire pack ecosystem (`voiceforge pack install peter && voiceforge play --pack peter --event build_failed`). For voice cloning from your own audio, continue:
 
