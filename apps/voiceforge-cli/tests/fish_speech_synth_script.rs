@@ -23,6 +23,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
 
+// Local copy of the SHA pin for use in test fixtures + assertions
+// below. R4 fix (rust-expert review pass 1): the
+// `pinned_sha_matches_canonical_rust_constant` test below grep-asserts
+// that this value matches the canonical declaration in
+// install_cloning.rs::FISH_SPEECH_PINNED_SHA so a one-place drift
+// trips immediately (bash + python + this constant + the canonical
+// Rust constant all stay in lockstep).
 const PINNED_FISH_SPEECH_SHA: &str = "3dd1f85c402ee6f0a17c2971d3b0dd8d881ca139";
 
 fn script_path() -> PathBuf {
@@ -201,6 +208,24 @@ fn pinned_sha_matches_install_script() {
             r#"EXPECTED_FISH_SPEECH_SHA = "{PINNED_FISH_SPEECH_SHA}""#
         )),
         "fish_speech_synth.py's pin diverged from the test constant"
+    );
+
+    // R4 fix (rust-expert review pass 1): also assert the canonical
+    // Rust constant in install_cloning.rs matches. Without this, a
+    // bumper could update bash + python + this test constant in
+    // lockstep and STILL leave the Rust source-of-truth stale.
+    let rs_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("install_cloning.rs");
+    let rs = std::fs::read_to_string(&rs_path).expect("read install_cloning.rs");
+    assert!(
+        rs.contains(&format!(
+            r#"FISH_SPEECH_PINNED_SHA: &str = "{PINNED_FISH_SPEECH_SHA}""#
+        )),
+        "install_cloning.rs::FISH_SPEECH_PINNED_SHA diverged from the test
+         constant {PINNED_FISH_SPEECH_SHA}. All four pin sites (bash, python,
+         this test constant, and the Rust source-of-truth constant) MUST
+         match."
     );
 }
 

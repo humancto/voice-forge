@@ -17,6 +17,22 @@ use crate::{branding, paths};
 const MARKER_SCHEMA_VERSION_V1: u32 = 1;
 const MARKER_SCHEMA_VERSION_V2: u32 = 2;
 
+/// **Single source of truth for the pinned fish-speech repo SHA**
+/// (R4 fix from rust-expert review pass 1). The bash installer's
+/// `FISH_SPEECH_SHA` and the Python worker's `EXPECTED_FISH_SPEECH_SHA`
+/// are asserted to match this value by
+/// `tests/fish_speech_synth_script.rs::pinned_sha_matches_install_script`.
+///
+/// Bumping requires editing all three pin sites in lockstep:
+///   - this constant
+///   - `scripts/install_cloning_fish.sh::FISH_SPEECH_SHA`
+///   - `scripts/fish_speech_synth.py::EXPECTED_FISH_SPEECH_SHA`
+///
+/// The integration test enforces it; a one-place bump is impossible
+/// to land silently.
+#[allow(dead_code)]
+pub const FISH_SPEECH_PINNED_SHA: &str = "3dd1f85c402ee6f0a17c2971d3b0dd8d881ca139";
+
 /// Schema-1 marker (GPT-SoVITS / v1 installer). Kept intact for the
 /// legacy CloningEngine in tts.rs and the `clone` subcommand which both
 /// targeted the v1 runtime. Adding fields here is backward-compat;
@@ -518,12 +534,18 @@ chinese_hubert_base = "24164f12"
         std::fs::write(dir.join("INSTALLED.v1.bak"), body).unwrap();
     }
 
-    const V2_MARKER_BODY: &str = r#"
+    // V2 marker body builder (R4 fix from rust-expert review pass 1).
+    // Embeds the FISH_SPEECH_PINNED_SHA constant rather than hardcoding
+    // the SHA, so a future bump of the pin can never leave a stale SHA
+    // in this test fixture.
+    fn v2_marker_body() -> String {
+        format!(
+            r#"
 schema_version = 2
 version = "0.4.0"
 installed_at = "2026-05-11T00:00:00Z"
 engine = "fish-speech-s2-pro"
-fish_speech_sha = "3dd1f85c402ee6f0a17c2971d3b0dd8d881ca139"
+fish_speech_sha = "{FISH_SPEECH_PINNED_SHA}"
 python_path = "/opt/homebrew/bin/python3.11"
 ffmpeg6_prefix = "/opt/homebrew/opt/ffmpeg@6"
 venv_path = "/x/venv"
@@ -533,21 +555,20 @@ whisper_model = "medium"
 
 [model_sha256]
 codec_pth = "74fc41c5"
-"#;
+"#
+        )
+    }
 
     #[test]
     #[serial]
     fn read_install_state_v2_parses_real_v2_toml() {
         let tmp = tempfile::tempdir().unwrap();
         with_home(tmp.path(), || {
-            write_v2_marker(tmp.path(), V2_MARKER_BODY);
+            write_v2_marker(tmp.path(), &v2_marker_body());
             let st = read_install_state_v2().expect("parse v2");
             assert_eq!(st.schema_version, 2);
             assert_eq!(st.engine, "fish-speech-s2-pro");
-            assert_eq!(
-                st.fish_speech_sha,
-                "3dd1f85c402ee6f0a17c2971d3b0dd8d881ca139"
-            );
+            assert_eq!(st.fish_speech_sha, FISH_SPEECH_PINNED_SHA);
             assert_eq!(st.whisper_model, "medium");
             assert_eq!(st.model_sha256.get("codec_pth").unwrap(), "74fc41c5");
         });
@@ -583,7 +604,7 @@ ffmpeg6_prefix = "/f"
     fn read_install_state_v1_rejects_v2_marker_with_migrate_hint() {
         let tmp = tempfile::tempdir().unwrap();
         with_home(tmp.path(), || {
-            write_v2_marker(tmp.path(), V2_MARKER_BODY);
+            write_v2_marker(tmp.path(), &v2_marker_body());
             let err = read_install_state().unwrap_err();
             let msg = format!("{err:#}");
             assert!(
@@ -626,7 +647,7 @@ repo_path = "/r"
     fn read_install_state_any_dispatches_v2() {
         let tmp = tempfile::tempdir().unwrap();
         with_home(tmp.path(), || {
-            write_v2_marker(tmp.path(), V2_MARKER_BODY);
+            write_v2_marker(tmp.path(), &v2_marker_body());
             let st = read_install_state_any().expect("parse any");
             assert_eq!(st.schema_version(), 2);
             assert_eq!(st.engine_label(), "fish-speech S2 Pro");
@@ -688,7 +709,7 @@ ffmpeg6_prefix = "z"
     fn is_installed_v2_true_when_v2_marker_present() {
         let tmp = tempfile::tempdir().unwrap();
         with_home(tmp.path(), || {
-            write_v2_marker(tmp.path(), V2_MARKER_BODY);
+            write_v2_marker(tmp.path(), &v2_marker_body());
             assert!(is_installed_v2());
             assert!(
                 !is_installed(),
