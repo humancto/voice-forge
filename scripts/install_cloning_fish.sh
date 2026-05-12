@@ -161,8 +161,7 @@ case "$MODE" in
         "$VENV_DIR/bin/python" -c "
 import sys
 sys.path.insert(0, '.')
-from fish_speech.models.text2semantic.inference import GenerateRequest  # noqa
-from fish_speech.models.dac.inference import load_codec_model  # noqa
+from fish_speech.models.text2semantic.inference import GenerateRequest, load_codec_model  # noqa
 print('OK')
 " >/dev/null ) || die "smoke import failed — re-install with --force"
     fi
@@ -386,14 +385,26 @@ fi
 
 # -- 13. smoke test ---------------------------------------------------
 
-step "smoke test: importing fish_speech.models.text2semantic + dac"
+step "smoke test: importing fish_speech.models.text2semantic"
 if [[ "$SKIP_WEIGHTS" != "1" ]] && [[ "$DRY_RUN" != "1" ]]; then
+  # Real fish-speech at SHA 3dd1f85c exports GenerateRequest +
+  # load_codec_model + encode_audio + decode_to_audio + init_model +
+  # generate_long ALL from fish_speech.models.text2semantic.inference.
+  # The previous v0.4 PR-AB code had `load_codec_model` imported from
+  # fish_speech.models.dac.inference which fails ImportError at runtime
+  # — caught by the first real install end-to-end on 2026-05-12.
   ( cd "$REPO_DIR" && DYLD_FALLBACK_LIBRARY_PATH="$FFMPEG6_PREFIX/lib" \
     "$PYTHON" -c "
 import sys
 sys.path.insert(0, '.')
-from fish_speech.models.text2semantic.inference import GenerateRequest
-from fish_speech.models.dac.inference import load_codec_model
+from fish_speech.models.text2semantic.inference import (
+    GenerateRequest,
+    init_model,
+    generate_long,
+    load_codec_model,
+    encode_audio,
+    decode_to_audio,
+)
 print('fish-speech imports clean')
 " ) || die "smoke import failed; check $LOG_FILE"
 fi

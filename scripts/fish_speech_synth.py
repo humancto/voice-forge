@@ -120,14 +120,18 @@ def load_fish(repo_dir: Path, checkpoint_path: Path, device: str):
 
     # Imports gated on the env so this file can be import-tested without
     # a real fish-speech install — see tests/fish_speech_synth_script.rs.
+    # All five functions live in text2semantic.inference at fish-speech
+    # SHA 3dd1f85c (the pinned commit). The dac.inference module exists
+    # but exports a CLI-only `main` — NOT the synth helpers. Splitting
+    # the imports across both modules was the first-real-install bug
+    # caught on 2026-05-12; this consolidated import is what mirrors
+    # the working `scripts/render_pack_persistent.py`.
     from fish_speech.models.text2semantic.inference import (  # noqa: E402
-        init_model,
-        generate_long,
-    )
-    from fish_speech.models.dac.inference import (  # noqa: E402
-        load_codec_model,
-        encode_audio,
         decode_to_audio,
+        encode_audio,
+        generate_long,
+        init_model,
+        load_codec_model,
     )
 
     if device == "cuda":
