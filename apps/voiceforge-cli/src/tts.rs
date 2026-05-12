@@ -286,8 +286,19 @@ impl Engine {
                     }
                 }
                 EngineKind::Embedded => {
-                    // Fall through to embedded; preferred=embedded means
-                    // user explicitly opted out of cloning.
+                    // SHOWSTOPPER FIX (rust-expert review pass 1): reject
+                    // loud rather than silently misroute a cloned voice
+                    // to `say`/`espeak-ng`. The previous fall-through
+                    // would render the user's "peter" clone in the system
+                    // default voice with no error — they'd think cloning
+                    // was broken. Force the user to either unset the env
+                    // or pick a clone runtime explicitly.
+                    bail!(
+                        "voice {voice:?} is a cloned voice but VOICEFORGE_TTS_ENGINE=embedded \
+                         opts out of all clone runtimes. Either unset VOICEFORGE_TTS_ENGINE \
+                         (defaults to fish-speech-s2-pro) or set it to fish-speech-s2-pro / \
+                         gpt-sovits-v2 explicitly."
+                    );
                 }
             }
         }
@@ -1534,5 +1545,55 @@ mod tests {
             }
             EngineKind::GptSovitsV2 => panic!("Embedded must not equal GptSovitsV2"),
         }
+    }
+
+    /// SHOWSTOPPER S1 regression test (rust-expert review pass 1):
+    /// `Engine::speak` with `preferred=Embedded` and a CLONED voice
+    /// MUST bail loud rather than silently misroute to `say` /
+    /// `espeak-ng`. Previously this fell through and produced
+    /// wrong-voice audio with no error.
+    #[tokio::test]
+    #[serial]
+    async fn embedded_preferred_with_cloned_voice_bails_loud() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let voice_dir = tmp.path().join("voices/peter");
+        std::fs::create_dir_all(&voice_dir).expect("mkdir voice");
+        // voices::voice_exists checks for profile.toml; stub one in.
+        std::fs::write(
+            voice_dir.join("profile.toml"),
+            r#"name = "peter"
+created_at = "2026-05-11T00:00:00Z"
+ref_main_text = "stub"
+"#,
+        )
+        .expect("write profile");
+
+        let prev_home = std::env::var("VOICEFORGE_HOME").ok();
+        std::env::set_var("VOICEFORGE_HOME", tmp.path());
+
+        let engine = Engine {
+            embedded: EmbeddedEngine::new().expect("embedded"),
+            server: None,
+            cloning: None,
+            fish: None,
+            preferred: EngineKind::Embedded,
+        };
+        let result = engine.speak("hello", "peter").await;
+
+        match prev_home {
+            Some(v) => std::env::set_var("VOICEFORGE_HOME", v),
+            None => std::env::remove_var("VOICEFORGE_HOME"),
+        }
+
+        let err = result.expect_err(
+            "speak('hello', 'peter') with preferred=Embedded MUST error — \
+             silently routing to embedded `say` would render wrong-voice audio",
+        );
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("VOICEFORGE_TTS_ENGINE") && msg.contains("opts out"),
+            "S1 bail must name the env var + the 'opts out' phrasing so the user
+             knows how to fix it. Got: {msg}"
+        );
     }
 }

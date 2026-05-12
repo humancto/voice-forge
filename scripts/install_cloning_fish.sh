@@ -126,7 +126,11 @@ step "voiceforge install-cloning v2 (fish-speech S2 Pro)  (mode=$MODE force=$FOR
 # the schema-1 → schema-2 migration hint surfaced in `voiceforge doctor`.
 
 if [[ "$MODE" == "normal" ]] && [[ -f "$MARKER_FILE" ]]; then
-  existing_schema="$(awk -F'=' '/^schema_version/ {gsub(/ /, "", $2); print $2; exit}' "$MARKER_FILE" 2>/dev/null || echo "")"
+  # R6 fix (rust-expert review pass 1): tighten the regex to require
+  # `=` after schema_version. Without `[[:space:]]*=`, a hypothetical
+  # future field like `schema_version_old = 1` would falsely register
+  # as a v1 install and trigger an unwanted backup.
+  existing_schema="$(awk -F'=' '/^schema_version[[:space:]]*=/ {gsub(/ /, "", $2); print $2; exit}' "$MARKER_FILE" 2>/dev/null || echo "")"
   if [[ "$existing_schema" == "1" ]]; then
     step "detected schema-1 (GPT-SoVITS) install — backing up to $V1_BACKUP_FILE"
     run cp -f "$MARKER_FILE" "$V1_BACKUP_FILE"

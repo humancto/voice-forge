@@ -90,10 +90,14 @@ impl InstallStateAny {
     }
 
     /// Engine label suitable for `voiceforge doctor` output.
+    /// Nit fix (rust-expert review pass 1): the previous label
+    /// "GPT-SoVITS v2 (legacy)" conflated the GPT-SoVITS *model
+    /// version* (v2) with the schema version. Reads as if "v2" is the
+    /// new one. Renamed to make the schema version explicit.
     #[allow(dead_code)]
     pub fn engine_label(&self) -> &'static str {
         match self {
-            Self::V1(_) => "GPT-SoVITS v2 (legacy)",
+            Self::V1(_) => "GPT-SoVITS (legacy v1 schema)",
             Self::V2(_) => "fish-speech S2 Pro",
         }
     }
@@ -187,8 +191,20 @@ struct SchemaProbe {
 }
 
 fn peek_schema_version(raw: &str, path: &std::path::Path) -> Result<u32> {
-    let probe: SchemaProbe = toml::from_str(raw)
-        .with_context(|| format!("reading schema_version from {}", path.display()))?;
+    let probe: SchemaProbe = toml::from_str(raw).with_context(|| {
+        // Bug B2 fix (rust-expert review pass 1): the bare "reading
+        // schema_version from <path>" message gave the user no signal
+        // about *why* the parse failed when they hit a corrupted /
+        // truncated marker. Surface byte length + first 80 chars so
+        // "is the file empty?" / "is it half-written?" is answerable
+        // without shelling into ~/.voiceforge.
+        let preview: String = raw.chars().take(80).collect();
+        format!(
+            "reading schema_version from {} ({} bytes; first 80 chars: {preview:?})",
+            path.display(),
+            raw.len(),
+        )
+    })?;
     Ok(probe.schema_version)
 }
 
@@ -273,6 +289,14 @@ Either downgrade voiceforge or re-run `voiceforge install-cloning --force`.",
 /// migration-hint render only needs the existence + a SHA-prefix peek;
 /// we don't enforce it parses cleanly (a corrupted backup must NOT
 /// block the v2 install from being usable).
+///
+/// **Doctor.rs surfaces the migration hint on existence ALONE** (R5
+/// per rust-expert review pass 1): a 0-byte `INSTALLED.v1.bak` (e.g.
+/// from a `cp -f` that ran out of disk mid-copy) will trigger the
+/// "old voices need migration" hint. This is a deliberate over-call —
+/// the cost of a false positive is one extra line in `doctor`'s output;
+/// the cost of a false negative is a user with stranded GPT-SoVITS
+/// voices who doesn't know they need migration.
 #[allow(dead_code)]
 pub fn read_v1_backup_raw() -> Option<String> {
     let path = v1_backup_path()?;
@@ -589,7 +613,7 @@ repo_path = "/r"
             );
             let st = read_install_state_any().expect("parse any");
             assert_eq!(st.schema_version(), 1);
-            assert_eq!(st.engine_label(), "GPT-SoVITS v2 (legacy)");
+            assert_eq!(st.engine_label(), "GPT-SoVITS (legacy v1 schema)");
             match st {
                 InstallStateAny::V1(v1) => assert_eq!(v1.gpt_sovits_sha, "08d627c3"),
                 InstallStateAny::V2(_) => panic!("expected V1 variant"),

@@ -81,11 +81,21 @@ def fail(error: str, exit_code: int = 1) -> None:
 
 def parse_marker(path: Path) -> dict:
     """Tiny TOML parser sufficient for our flat marker. Avoids pulling
-    `tomllib` (3.11+) so the script stays portable down to 3.10."""
+    `tomllib` (3.11+) so the script stays portable down to 3.10.
+
+    Risk R3 fix (rust-expert review pass 1): stop at the first `[table]`
+    line. Previously we kept reading and table keys silently clobbered
+    top-level keys with the same name (e.g. a future top-level
+    `engine = "..."` plus a `[model_sha256] engine = "..."` would let
+    the table value win). We only consume top-level fields, so bailing
+    on first `[` is the correct + minimal defense.
+    """
     out: dict[str, str] = {}
     for line in path.read_text().splitlines():
         line = line.strip()
-        if not line or line.startswith("#") or line.startswith("["):
+        if line.startswith("["):
+            break  # R3: stop on first table; we read top-level only
+        if not line or line.startswith("#"):
             continue
         if "=" not in line:
             continue

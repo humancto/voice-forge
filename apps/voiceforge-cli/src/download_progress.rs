@@ -281,8 +281,17 @@ fn total_from_content_range(resp: &reqwest::Response) -> Option<u64> {
         .headers()
         .get(reqwest::header::CONTENT_RANGE)
         .and_then(|v| v.to_str().ok())?;
-    // "bytes 1024-4095/8192"
-    let after_slash = h.rsplit('/').next()?;
+    parse_total_from_content_range_value(h)
+}
+
+/// Pure parser broken out for direct testing — `total_from_content_range`
+/// takes a `&reqwest::Response` which is non-trivial to synthesize in
+/// unit tests. Bug B3 fix (rust-expert review pass 1): "improve" the
+/// off-by-one and you'll silently hand the rest of the pipeline a bogus
+/// total without anything tripping. The unit tests below catch that.
+fn parse_total_from_content_range_value(header_value: &str) -> Option<u64> {
+    // "bytes 1024-4095/8192" -> "8192" -> 8192
+    let after_slash = header_value.rsplit('/').next()?;
     after_slash.parse::<u64>().ok()
 }
 
@@ -336,10 +345,66 @@ mod tests {
         assert_eq!(etag_path(dest), Path::new("/a/b/c.bin.partial.etag"));
     }
 
-    // Note: `total_from_content_range` is covered indirectly by the
-    // `resume_appends_to_existing_partial` integration test, which
-    // exercises a real `Content-Range: bytes 100-999/1000` response
-    // through mockito. No synthetic-response unit test needed.
+    // ========================================================================
+    // Bug B3 (rust-expert review pass 1): direct unit tests on
+    // parse_total_from_content_range_value. Pure parser broken out
+    // from total_from_content_range so a future "improvement" that
+    // adds an off-by-one (or breaks the rsplit) trips here instead of
+    // silently corrupting download progress totals.
+    // ========================================================================
+
+    #[test]
+    fn parse_total_from_content_range_handles_standard_form() {
+        assert_eq!(
+            parse_total_from_content_range_value("bytes 1024-4095/8192"),
+            Some(8192)
+        );
+    }
+
+    #[test]
+    fn parse_total_from_content_range_handles_zero_offset() {
+        assert_eq!(
+            parse_total_from_content_range_value("bytes 0-99/100"),
+            Some(100)
+        );
+    }
+
+    #[test]
+    fn parse_total_from_content_range_handles_large_total() {
+        // ~10 GB fish-speech weights are a real download size; the parser
+        // must not silently truncate to u32 or similar.
+        assert_eq!(
+            parse_total_from_content_range_value("bytes 0-9999999999/10737418240"),
+            Some(10_737_418_240)
+        );
+    }
+
+    #[test]
+    fn parse_total_from_content_range_returns_none_on_unknown_total() {
+        // Per RFC 7233 §4.2: `*` after the slash means "total unknown".
+        // Must NOT produce a bogus number.
+        assert_eq!(parse_total_from_content_range_value("bytes 0-499/*"), None);
+    }
+
+    #[test]
+    fn parse_total_from_content_range_returns_none_on_garbage() {
+        assert_eq!(
+            parse_total_from_content_range_value("not a content-range header"),
+            None
+        );
+        assert_eq!(parse_total_from_content_range_value(""), None);
+    }
+
+    #[test]
+    fn parse_total_from_content_range_no_off_by_one() {
+        // Defense-in-depth: B never gets confused with C. Asserts that
+        // the returned total is the AFTER-slash number, not the AFTER-dash
+        // number. (Reviewer flagged this as the most likely "fix" a
+        // future contributor would make and silently break.)
+        let total = parse_total_from_content_range_value("bytes 0-7/8").unwrap();
+        assert_eq!(total, 8, "must return TOTAL (after /), not END (after -)");
+        assert_ne!(total, 7, "must NOT return the inclusive END byte index");
+    }
 
     #[tokio::test]
     async fn fresh_download_writes_dest_atomically() {
