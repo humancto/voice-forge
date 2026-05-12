@@ -836,6 +836,17 @@ impl FishEngine {
         self.cache_dir.join(format!("{key}.wav"))
     }
 
+    /// Cache path for the explicit-ref synth path. SEPARATE hash domain
+    /// from `cache_path_for` so the existing voice-keyed cache is
+    /// untouched. See `fish_explicit_ref_cache_key` for the salt
+    /// discriminator that makes cross-domain collisions impossible.
+    /// Wired into `install_smoke::run_smoke_test` in PR-AB step 6d-3.
+    #[allow(dead_code)]
+    fn cache_path_for_explicit_ref(&self, text: &str, ref_wav: &Path) -> PathBuf {
+        let key = fish_explicit_ref_cache_key(text, ref_wav);
+        self.cache_dir.join(format!("{key}.wav"))
+    }
+
     pub async fn speak(&self, text: &str, voice: &str) -> Result<PathBuf> {
         let profile =
             voices::load_voice(voice).with_context(|| format!("loading cloned voice {voice}"))?;
@@ -888,6 +899,83 @@ impl FishEngine {
             }
             if v.get("sample_rate").is_some() {
                 return Ok(out);
+            }
+            // notification line (ready / loaded_seconds); keep reading
+        }
+    }
+
+    /// Synth bypassing `voices::load_voice`. The post-install smoke
+    /// test (PR-AB step 6d) and future one-shot synth callers use
+    /// this when they have an explicit reference clip path + transcript
+    /// and don't want to register a v1 voice profile that wouldn't
+    /// pass the legacy `gpt-sovits-v2-multi-aux-ref` schema check.
+    ///
+    /// **Cache key uses a separate hash domain from `speak()`** so
+    /// `(text, voice, created_at)` and `(text, ref_wav)` can never
+    /// collide. See `fish_explicit_ref_cache_key` for the discriminator
+    /// salt.
+    ///
+    /// Wired into `install_smoke::run_smoke_test` in PR-AB step 6d-3.
+    #[allow(dead_code)]
+    pub async fn speak_with_explicit_ref(
+        &self,
+        text: &str,
+        ref_wav: &Path,
+        ref_txt: &str,
+        out: &Path,
+    ) -> Result<()> {
+        if let Some(parent) = out.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("could not create output dir {}", parent.display()))?;
+        }
+
+        let mut guard = self.child.lock().await;
+        if guard.is_none() {
+            *guard = Some(self.spawn_child().await?);
+        }
+        let child = guard.as_mut().expect("just spawned");
+
+        // Canonicalize ref_wav so the python child resolves the same
+        // bytes regardless of CWD-relative invocation.
+        let ref_wav_canonical = std::fs::canonicalize(ref_wav)
+            .with_context(|| format!("canonicalizing ref_wav {}", ref_wav.display()))?;
+
+        let req = serde_json::json!({
+            "text": text,
+            "explicit_ref_wav": ref_wav_canonical.to_string_lossy(),
+            "explicit_ref_txt": ref_txt,
+            "out": out.to_string_lossy(),
+        });
+        let line = format!("{req}\n");
+        child
+            .stdin
+            .write_all(line.as_bytes())
+            .await
+            .context("writing to fish_speech_synth.py stdin (explicit-ref)")?;
+        child
+            .stdin
+            .flush()
+            .await
+            .context("flushing fish synth stdin")?;
+
+        let started = Instant::now();
+        loop {
+            if started.elapsed() > FISH_SYNTH_TIMEOUT {
+                bail!("fish-speech synth timed out after {:?}", FISH_SYNTH_TIMEOUT);
+            }
+            let line = match child.stdout_lines.next_line().await {
+                Ok(Some(l)) => l,
+                Ok(None) => bail!("fish-speech synth child closed stdout"),
+                Err(e) => return Err(e).context("reading fish synth stdout"),
+            };
+            let v: serde_json::Value = serde_json::from_str(&line)
+                .with_context(|| format!("parsing fish synth response: {line}"))?;
+            if v.get("ok").and_then(|b| b.as_bool()) != Some(true) {
+                let err = v.get("error").and_then(|e| e.as_str()).unwrap_or("unknown");
+                bail!("fish synth (explicit-ref) failed: {err}");
+            }
+            if v.get("sample_rate").is_some() {
+                return Ok(());
             }
             // notification line (ready / loaded_seconds); keep reading
         }
@@ -985,6 +1073,25 @@ fn fish_cache_key(text: &str, voice: &str, created_at: &str) -> String {
     hasher.update(created_at.as_bytes());
     hasher.update(b"|");
     hasher.update(b"fish-speech.s2-pro");
+    hex::encode(hasher.finalize())
+}
+
+/// Cache key for the explicit-ref synth path (PR-AB step 6d).
+///
+/// **Separate hash domain from `fish_cache_key`** via the discriminator
+/// salt `b"fish-speech.s2-pro|explicit-ref"`. Cross-domain collision
+/// between `(text, voice, created_at)` and `(text, ref_wav)` is
+/// impossible by construction; the regression test
+/// `fish_explicit_ref_cache_key_in_separate_domain` pins this.
+/// Wired into `install_smoke::run_smoke_test` in PR-AB step 6d-3.
+#[allow(dead_code)]
+fn fish_explicit_ref_cache_key(text: &str, ref_wav: &Path) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(text.as_bytes());
+    hasher.update(b"|");
+    hasher.update(ref_wav.to_string_lossy().as_bytes());
+    hasher.update(b"|");
+    hasher.update(b"fish-speech.s2-pro|explicit-ref");
     hex::encode(hasher.finalize())
 }
 
@@ -1518,6 +1625,56 @@ mod tests {
         assert_ne!(base, by_text, "text change must flip key");
         assert_ne!(base, by_voice, "voice change must flip key");
         assert_ne!(base, by_created, "created_at change must flip key");
+    }
+
+    // ========================================================================
+    // PR-AB step 6d-2 (rust-expert plan v3 N3): explicit-ref cache key
+    // tests. The new key uses a SEPARATE hash domain from fish_cache_key
+    // so cross-domain collision is impossible by construction.
+    // ========================================================================
+
+    #[test]
+    fn fish_explicit_ref_cache_key_is_stable_for_same_inputs() {
+        let p = std::path::PathBuf::from("/tmp/ref.wav");
+        let a = fish_explicit_ref_cache_key("hi", &p);
+        let b = fish_explicit_ref_cache_key("hi", &p);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn fish_explicit_ref_cache_key_changes_with_each_input_field() {
+        let p1 = std::path::PathBuf::from("/tmp/a.wav");
+        let p2 = std::path::PathBuf::from("/tmp/b.wav");
+        let base = fish_explicit_ref_cache_key("hi", &p1);
+        let by_text = fish_explicit_ref_cache_key("bye", &p1);
+        let by_ref = fish_explicit_ref_cache_key("hi", &p2);
+        assert_ne!(base, by_text, "text change must flip key");
+        assert_ne!(base, by_ref, "ref_wav change must flip key");
+    }
+
+    /// N3 regression net: the explicit-ref cache lives in a SEPARATE
+    /// hash domain from fish_cache_key. Even pathological inputs that
+    /// use the same path string in both places must produce distinct
+    /// keys — the salt discriminator (`b"|explicit-ref"`) makes
+    /// collision impossible. Without this, a future "improvement"
+    /// that drops the discriminator would silently mix the two
+    /// caches and the smoke test could hit a stale GPT-SoVITS-era
+    /// cached WAV.
+    #[test]
+    fn fish_explicit_ref_cache_key_in_separate_domain() {
+        // Same `text` value across both keyspaces; the explicit-ref
+        // call also passes the same string (used as both `voice` and
+        // path string) — the only thing keeping them apart is the
+        // discriminator salt.
+        let s = "collision-bait";
+        let voice_keyed = fish_cache_key(s, s, s);
+        let explicit_keyed = fish_explicit_ref_cache_key(s, &std::path::PathBuf::from(s));
+        assert_ne!(
+            voice_keyed, explicit_keyed,
+            "voice-keyed and explicit-ref-keyed cache keys MUST live in separate \
+             hash domains (discriminator salt). Drift here = silent cross-cache \
+             contamination on the smoke path."
+        );
     }
 
     /// Dispatch precedence test (no real synth involved). Build an
