@@ -175,8 +175,11 @@ mod tests {
         // accidental truncation (e.g. someone replaces the install
         // script with a one-line stub) trips the test.
         const MIN_SCRIPT_BYTES: usize = 200; // even the placeholder is >300 bytes
-        const MIN_WAV_BYTES: usize = 32_000; // ~0.5s @ 32 kHz mono 16-bit
-        const MIN_TXT_BYTES: usize = 10;
+                                             // PR-AB step 6d (rust-expert plan v3): real `say`-generated
+                                             // ~8s clip is ~500 KB. Bumped from the placeholder-era 32_000
+                                             // floor; catches a regress to a tiny placeholder.
+        const MIN_WAV_BYTES: usize = 250_000;
+        const MIN_TXT_BYTES: usize = 50; // real transcript is ~190 chars
         assert!(
             INSTALL_CLONING_FISH_SH.len() >= MIN_SCRIPT_BYTES,
             "install script too small: {} bytes (min {MIN_SCRIPT_BYTES})",
@@ -184,7 +187,9 @@ mod tests {
         );
         assert!(
             SMOKE_REFERENCE_WAV.len() >= MIN_WAV_BYTES,
-            "smoke wav too small: {} bytes (min {MIN_WAV_BYTES})",
+            "smoke wav too small: {} bytes (min {MIN_WAV_BYTES}). \
+             Did you accidentally revert to the placeholder? Regenerate \
+             via `say -v Samantha \"...\" -o /tmp/x.aiff && ffmpeg ...`",
             SMOKE_REFERENCE_WAV.len()
         );
         assert!(
@@ -203,6 +208,32 @@ mod tests {
             &SMOKE_REFERENCE_WAV[8..12],
             b"WAVE",
             "smoke wav embed lacks WAVE marker"
+        );
+    }
+
+    /// SHA256 lock for the canonical smoke fixture (PR-AB step 6d, R3
+    /// fix). The fixture is `say`-generated locally on macOS, then
+    /// committed; without this lock a developer who regenerates with
+    /// a different `say` voice / text / ffmpeg version would silently
+    /// ship different bytes. The committed fixture's SHA is the
+    /// source of truth — regenerate-and-recommit flows MUST update
+    /// this constant in lockstep.
+    const SMOKE_REFERENCE_WAV_SHA256: &str =
+        "163813eec3acf28b51b44f7e6341a1ad7e0de8078f062720cd9afa892821a3bc";
+
+    #[test]
+    fn embedded_smoke_wav_sha256_matches_lock() {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(SMOKE_REFERENCE_WAV);
+        let actual = hex::encode(h.finalize());
+        assert_eq!(
+            actual, SMOKE_REFERENCE_WAV_SHA256,
+            "embedded smoke wav SHA256 drift detected.\n\
+             actual:   {actual}\n\
+             expected: {SMOKE_REFERENCE_WAV_SHA256}\n\
+             If you intentionally regenerated tests/fixtures/smoke_reference_8s.wav, \
+             update SMOKE_REFERENCE_WAV_SHA256 in this file to match."
         );
     }
 
