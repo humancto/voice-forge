@@ -334,7 +334,6 @@ const SMOKE_RECORD_SCHEMA_VERSION: u32 = 1;
 /// Written atomically (`.tmp` + rename) by the install orchestrator;
 /// read by `voiceforge doctor` for status surfacing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[allow(dead_code)] // wired in step 6d-7
 pub struct SmokeRecord {
     pub schema_version: u32,
     pub ran_at: String,
@@ -486,7 +485,7 @@ must be extracted first (PR-AB step 6c will wire that up automatically)."
 /// Branding header (full or compact banner) prints at the very start
 /// of a normal install. Suppressed for `--check` and `--uninstall`
 /// because those are noisy + fast and the banner would be in the way.
-pub fn run(force: bool, check: bool, uninstall: bool) -> Result<()> {
+pub async fn run(force: bool, check: bool, uninstall: bool) -> Result<()> {
     if [force, check, uninstall].iter().filter(|b| **b).count() > 1 {
         bail!("--force, --check, --uninstall are mutually exclusive");
     }
@@ -516,20 +515,76 @@ pub fn run(force: bool, check: bool, uninstall: bool) -> Result<()> {
             if force { "1" } else { "0" },
         );
 
-    let status = if use_wizard {
-        install_ui::run_with_wizard(&mut cmd, engine.approx_phase_count(), engine.human_title())
-            .with_context(|| format!("running install wizard for {}", script.display()))?
+    // Smoke synth opt-out (PR-AB step 6d-7). Set by automated installers
+    // (Homebrew bottle tests, CI that just wants the bash phase to succeed)
+    // that don't want the 30-90s smoke phase. The orchestrator NEVER sets
+    // this in production.
+    let skip_smoke = std::env::var("VOICEFORGE_INSTALL_CLONING_SKIP_SMOKE")
+        .ok()
+        .is_some_and(|v| !v.is_empty());
+
+    let should_smoke = engine == InstallEngine::FishSpeechS2Pro && mode == "normal" && !skip_smoke;
+
+    if use_wizard {
+        match install_ui::run_with_wizard_keep_alive(
+            &mut cmd,
+            engine.approx_phase_count(),
+            engine.human_title(),
+        )
+        .with_context(|| format!("running install wizard for {}", script.display()))?
+        {
+            install_ui::WizardOutcome::Failed { status } => {
+                bail!("{} exited non-zero: {status}", engine.script_filename());
+            }
+            install_ui::WizardOutcome::Success { mp } => {
+                if should_smoke {
+                    let bar = install_ui::add_smoke_phase(
+                        &mp,
+                        "smoke testing voice clone (~30-90s on CPU)",
+                    );
+                    let smoke = crate::install_smoke::run_smoke_test().await;
+                    let result = smoke.unwrap_or_else(|e| crate::install_smoke::SmokeResult {
+                        passed: false,
+                        duration_ms: 0,
+                        wav_bytes: 0,
+                        sample_count: 0,
+                        message: format!("smoke orchestrator failed: {e:#}"),
+                    });
+                    let summary = if result.passed {
+                        format!(
+                            "smoke passed in {}ms ({} bytes, {} samples)",
+                            result.duration_ms, result.wav_bytes, result.sample_count
+                        )
+                    } else {
+                        format!("smoke failed: {}", result.message)
+                    };
+                    install_ui::finish_smoke_phase(bar, result.passed, &summary);
+                    let _ = write_smoke_record_atomic(&SmokeRecord::new(
+                        result.passed,
+                        result.duration_ms,
+                        result.wav_bytes,
+                        result.sample_count,
+                        result.message,
+                    ));
+                }
+                drop(mp);
+            }
+        }
     } else {
         cmd.stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
-        cmd.status()
-            .with_context(|| format!("spawning {}", script.display()))?
-    };
-
-    if !status.success() {
-        bail!("{} exited non-zero: {status}", engine.script_filename());
+        let status = cmd
+            .status()
+            .with_context(|| format!("spawning {}", script.display()))?;
+        if !status.success() {
+            bail!("{} exited non-zero: {status}", engine.script_filename());
+        }
+        // No-wizard path = piped output (non-TTY or color suppressed).
+        // Skip smoke — the spinner UX has nowhere to render and adding
+        // 30-90s of silent wall time would surprise the user.
     }
+
     Ok(())
 }
 
@@ -643,9 +698,9 @@ chinese_hubert_base = "24164f12"
         });
     }
 
-    #[test]
-    fn run_rejects_conflicting_flags() {
-        let err = run(true, true, false).unwrap_err();
+    #[tokio::test]
+    async fn run_rejects_conflicting_flags() {
+        let err = run(true, true, false).await.unwrap_err();
         assert!(format!("{err:#}").contains("mutually exclusive"));
     }
 

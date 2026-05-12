@@ -564,7 +564,7 @@ async fn main() -> Result<()> {
             check,
             uninstall,
         } => {
-            install_cloning::run(force, check, uninstall)?;
+            install_cloning::run(force, check, uninstall).await?;
         }
         Commands::Clone {
             name,

@@ -38,7 +38,6 @@ use std::time::Instant;
 
 use crate::{embedded_install, paths};
 
-#[allow(dead_code)] // wired via install_cloning::run() in step 6d-7
 pub const SMOKE_VOICE_DIRNAME: &str = ".smoke";
 
 /// Text the smoke synth asks fish-speech to render. Short, deterministic,
@@ -63,7 +62,6 @@ pub const MIN_OUTPUT_WAV_BYTES: u64 = 100_000;
 /// is the prod impl; tests inject a `MockSynth` that writes a known
 /// WAV without spawning a Python child.
 #[async_trait]
-#[allow(dead_code)] // wired in step 6d-7
 pub trait SmokeSynth: Send + Sync {
     async fn speak_with_explicit_ref(
         &self,

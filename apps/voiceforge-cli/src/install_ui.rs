@@ -83,6 +83,13 @@ pub enum WizardOutcome {
 ///
 /// `total_phases` is a hint for the bar's length; the wizard tolerates
 /// over- or under-count (last phase just lingers / bar wraps).
+///
+/// Kept around for the existing test surface + future callers who don't
+/// need the post-bash phase. PR-AB step 6d-7 switched the prod call
+/// site to `run_with_wizard_keep_alive` directly so the smoke phase
+/// could attach. `#[allow(dead_code)]` because nothing in production
+/// calls it today.
+#[allow(dead_code)]
 pub fn run_with_wizard(cmd: &mut Command, total_phases: usize, title: &str) -> Result<ExitStatus> {
     match run_with_wizard_keep_alive(cmd, total_phases, title)? {
         WizardOutcome::Success { mp } => {
@@ -108,7 +115,6 @@ pub fn run_with_wizard(cmd: &mut Command, total_phases: usize, title: &str) -> R
 ///   - Failure: `header.abandon_with_message("FAILED")`,
 ///     `phase_bar.abandon()`, captured-stdout dumped to stderr.
 ///     MultiProgress dropped internally.
-#[allow(dead_code)] // wired in step 6d-7
 pub fn run_with_wizard_keep_alive(
     cmd: &mut Command,
     total_phases: usize,
@@ -213,7 +219,6 @@ pub fn run_with_wizard_keep_alive(
 /// appears below the "done" header, which reads correctly because
 /// "done" means "the bash phase completed" — the smoke phase is a
 /// separate gate.
-#[allow(dead_code)]
 pub fn add_smoke_phase(mp: &MultiProgress, message: &str) -> ProgressBar {
     let bar = mp.add(ProgressBar::new_spinner());
     bar.set_style(
@@ -229,7 +234,6 @@ pub fn add_smoke_phase(mp: &MultiProgress, message: &str) -> ProgressBar {
 /// Finish the smoke-phase spinner with a result-shaped message.
 /// `passed=true` -> ✓ + green-ish message; `passed=false` -> ✗ +
 /// abandoned (red-tinted by indicatif's default abandoned style).
-#[allow(dead_code)]
 pub fn finish_smoke_phase(bar: ProgressBar, passed: bool, message: &str) {
     if passed {
         bar.finish_with_message(format!("✓ {message}"));
