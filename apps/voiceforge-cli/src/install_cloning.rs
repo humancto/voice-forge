@@ -140,6 +140,22 @@ pub fn cloning_synth_script() -> Option<PathBuf> {
     None
 }
 
+/// Path to the v2 fish-speech NDJSON worker. Loaded by the cloning
+/// venv's python. Mirrors `cloning_synth_script()` for the fish-speech
+/// path (PR-AB step 7 ships the script; step 8 wires the resolver).
+#[allow(dead_code)]
+pub fn fish_synth_script() -> Option<PathBuf> {
+    if let Some(repo_configs) = paths::repo_config_dir() {
+        if let Some(repo) = repo_configs.parent() {
+            let candidate = repo.join("scripts/fish_speech_synth.py");
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
 /// `true` when a schema-1 (GPT-SoVITS) install is present. Kept as the
 /// canonical "is the legacy cloning runtime ready?" check. Used by
 /// `clone.rs` and the legacy CloningEngine in tts.rs.
