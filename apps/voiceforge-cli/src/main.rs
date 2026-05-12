@@ -7,17 +7,22 @@ use std::path::PathBuf;
 mod audio;
 mod audio_sink;
 mod bootstrap;
+mod branding;
 mod cast;
 mod clone;
 mod config;
 mod daemon;
 mod daemon_client;
 mod daemon_server;
+mod dep_audit;
 mod doctor;
+mod download_progress;
+mod embedded_install;
 mod git_hooks;
 mod hook;
 mod ingest;
 mod install_cloning;
+mod install_ui;
 mod notify_macos;
 mod packs;
 mod paths;
@@ -196,6 +201,19 @@ enum Commands {
     /// audio backend, embedded TTS, optional Python server, cache,
     /// presets, and ffmpeg.
     Doctor {
+        /// Output as JSON for tooling. Schema is versioned via
+        /// `schema_version` and currently at 1.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Audit voiceforge's external dependencies (brew/apt packages,
+    /// Python runtime, model weights, ffmpeg, yt-dlp, etc.) and show
+    /// remediation commands for anything missing.
+    ///
+    /// Consumed by `doctor` + `install-cloning`; humans run it to
+    /// debug "why doesn't this work" without diving into the install
+    /// script.
+    Audit {
         /// Output as JSON for tooling. Schema is versioned via
         /// `schema_version` and currently at 1.
         #[arg(long)]
@@ -501,6 +519,19 @@ async fn main() -> Result<()> {
                 doctor::render_human(&report, &mut out)?;
             }
             if report.has_error() {
+                std::process::exit(1);
+            }
+        }
+        Commands::Audit { json } => {
+            let report = dep_audit::audit_dependencies();
+            if json {
+                let s = serde_json::to_string_pretty(&report)?;
+                println!("{s}");
+            } else {
+                branding::print_brand_header();
+                render_audit_human(&report);
+            }
+            if report.has_blocker() {
                 std::process::exit(1);
             }
         }
@@ -1282,4 +1313,50 @@ fn remove_voice_cmd(name: &str, force: bool) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Human-readable dep audit renderer. Per-dep row + remediation
+/// command for the current OS. Used by `voiceforge audit`.
+fn render_audit_human(report: &dep_audit::DepAuditReport) {
+    let mut out = std::io::stdout().lock();
+    let _ = writeln!(
+        out,
+        "voiceforge {} — dependency audit",
+        report.voiceforge_version
+    );
+    let _ = writeln!(out);
+    for dep in &report.deps {
+        let req = if dep.required { "required" } else { "optional" };
+        let text = format!(
+            "{name:24}  ({req})  {detail}",
+            name = dep.name,
+            detail = dep.detail,
+        );
+        let _ = match dep.status {
+            dep_audit::DepCheckStatus::Ok => branding::success_line(&mut out, &text),
+            dep_audit::DepCheckStatus::Warn => branding::warn_line(&mut out, &text),
+            dep_audit::DepCheckStatus::Error => branding::error_line(&mut out, &text),
+        };
+        if let Some(rem) = &dep.remediation {
+            if let Some(cmd) = rem.for_current_os() {
+                let _ = branding::info_line(&mut out, &format!("fix:  {cmd}"));
+            }
+        }
+    }
+    let _ = writeln!(out);
+    let _ = writeln!(
+        out,
+        "ok: {}  warn: {}  error: {}",
+        report.ok_count(),
+        report.warn_count(),
+        report.error_count(),
+    );
+    if report.has_blocker() {
+        let _ = writeln!(out);
+        let _ = branding::warn_line(&mut out, "one or more REQUIRED dependencies are missing.");
+        let _ = branding::info_line(
+            &mut out,
+            "run the suggested `fix:` commands above, then re-run `voiceforge audit`.",
+        );
+    }
 }

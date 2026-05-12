@@ -458,20 +458,54 @@ fn check_casts() -> Check {
 }
 
 fn check_cloning() -> Check {
-    match install_cloning::read_install_state() {
-        Ok(state) => ok(
-            "cloning",
+    use install_cloning::InstallStateAny;
+
+    let state = match install_cloning::read_install_state_any() {
+        Ok(s) => s,
+        Err(_) => {
+            return warn(
+                "cloning",
+                "not installed — run `voiceforge install-cloning` to enable voice cloning",
+            );
+        }
+    };
+
+    // If a v1 backup is present alongside a v2 install the user upgraded
+    // from GPT-SoVITS; surface a migration hint so any cloned voices
+    // they had on the old engine don't silently break. The backup file
+    // is written by scripts/install_cloning_fish.sh step "v1 marker
+    // backup" before the v2 install proceeds.
+    let migration_hint = match &state {
+        InstallStateAny::V2(_) if install_cloning::read_v1_backup_raw().is_some() => {
+            Some(" (v1 backup present at INSTALLED.v1.bak — old GPT-SoVITS voices need migration)")
+        }
+        _ => None,
+    };
+
+    let detail = match &state {
+        InstallStateAny::V1(s) => format!(
+            "GPT-SoVITS @ {} (ffmpeg6: {})",
+            &s.gpt_sovits_sha[..s.gpt_sovits_sha.len().min(7)],
+            s.ffmpeg6_prefix
+        ),
+        InstallStateAny::V2(s) => {
+            let sha7 = &s.fish_speech_sha[..s.fish_speech_sha.len().min(7)];
+            let whisper = if s.whisper_model.is_empty() {
+                String::new()
+            } else {
+                format!(", whisper: {}", s.whisper_model)
+            };
             format!(
-                "GPT-SoVITS @ {} (ffmpeg6: {})",
-                &state.gpt_sovits_sha[..state.gpt_sovits_sha.len().min(7)],
-                state.ffmpeg6_prefix
-            ),
-        ),
-        Err(_) => warn(
-            "cloning",
-            "not installed — run `voiceforge install-cloning` to enable voice cloning",
-        ),
-    }
+                "fish-speech S2 Pro @ {sha7} (ffmpeg6: {}{whisper})",
+                s.ffmpeg6_prefix
+            )
+        }
+    };
+    let detail = match migration_hint {
+        Some(hint) => format!("{detail}{hint}"),
+        None => detail,
+    };
+    ok("cloning", detail)
 }
 
 async fn check_ffmpeg() -> Check {

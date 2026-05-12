@@ -29,6 +29,11 @@ tests/fixtures/*.ogg
 tests/fixtures/*.flac
 tests/fixtures/*.pt
 tests/fixtures/*.aiff
+# Exception: smoke fixture bundled into the voiceforge binary via
+# include_bytes! at apps/voiceforge-cli/src/embedded_install.rs —
+# MUST be present at build time so brew/curl-installed users get
+# the post-install smoke test reference (ROADMAP v0.4 PR-AB).
+!tests/fixtures/smoke_reference_*.wav
 
 # OS / editor
 .DS_Store
