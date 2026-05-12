@@ -1653,27 +1653,39 @@ mod tests {
     }
 
     /// N3 regression net: the explicit-ref cache lives in a SEPARATE
-    /// hash domain from fish_cache_key. Even pathological inputs that
-    /// use the same path string in both places must produce distinct
-    /// keys — the salt discriminator (`b"|explicit-ref"`) makes
-    /// collision impossible. Without this, a future "improvement"
-    /// that drops the discriminator would silently mix the two
-    /// caches and the smoke test could hit a stale GPT-SoVITS-era
-    /// cached WAV.
+    /// hash domain from fish_cache_key. The salt discriminator
+    /// (`b"|explicit-ref"`) makes collision impossible. Without it, a
+    /// future "improvement" that drops the discriminator would silently
+    /// mix the two caches and the smoke test could hit a stale
+    /// GPT-SoVITS-era cached WAV.
+    ///
+    /// **Pre-salt-collision input pair** (rust-expert PR review pass-1
+    /// follow-up): the inputs below are constructed so the byte
+    /// sequences hashed *before* the discriminator salt are byte-for-
+    /// byte identical:
+    ///
+    ///   - voice path:    `"A" "|" "B" "|" "C" "|" "fish-speech.s2-pro"`
+    ///   - explicit path: `"A" "|" "B|C" "|" "fish-speech.s2-pro|explicit-ref"`
+    ///
+    /// Only the salt distinguishes them. Drop the salt -> both keys
+    /// hash the same pre-salt bytes -> collision -> test fails. With
+    /// the salt -> keys diverge -> assert_ne! holds. Previously this
+    /// test used `fish_cache_key("s", "s", "s")` vs
+    /// `fish_explicit_ref_cache_key("s", PathBuf("s"))` which produced
+    /// different keys *even without the salt* (3-field vs 2-field
+    /// structural difference) — the assertion was structurally
+    /// meaningless. Caught + fixed by rust-expert pass-1 PR review.
     #[test]
     fn fish_explicit_ref_cache_key_in_separate_domain() {
-        // Same `text` value across both keyspaces; the explicit-ref
-        // call also passes the same string (used as both `voice` and
-        // path string) — the only thing keeping them apart is the
-        // discriminator salt.
-        let s = "collision-bait";
-        let voice_keyed = fish_cache_key(s, s, s);
-        let explicit_keyed = fish_explicit_ref_cache_key(s, &std::path::PathBuf::from(s));
+        let voice_keyed = fish_cache_key("A", "B", "C");
+        let explicit_keyed = fish_explicit_ref_cache_key("A", &std::path::PathBuf::from("B|C"));
         assert_ne!(
             voice_keyed, explicit_keyed,
             "voice-keyed and explicit-ref-keyed cache keys MUST live in separate \
-             hash domains (discriminator salt). Drift here = silent cross-cache \
-             contamination on the smoke path."
+             hash domains (discriminator salt). The inputs above are constructed \
+             so the pre-salt byte sequences are identical — only the salt keeps \
+             the keys apart. Drift here = silent cross-cache contamination on \
+             the smoke path."
         );
     }
 
