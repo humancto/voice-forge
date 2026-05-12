@@ -275,7 +275,6 @@ def main() -> int:
         try:
             req = json.loads(line)
             text = req["text"]
-            voice = req["voice"]
             out = Path(req["out"])
             out.parent.mkdir(parents=True, exist_ok=True)
 
@@ -284,23 +283,48 @@ def main() -> int:
                 handles = load_fish(repo_dir, checkpoint_path, device)
                 emit({"ok": True, "loaded_seconds": round(time.time() - t0, 2)})
 
-            if voice not in prompt_cache:
-                voice_dir = voices_dir / voice
-                ref_wav = voice_dir / "ref.wav"
-                ref_txt = voice_dir / "ref.txt"
-                if not ref_wav.is_file():
+            # PR-AB step 6d-2: explicit-ref path takes precedence over
+            # the voice-lookup path. The post-install smoke synth uses
+            # this so it doesn't have to register a v1-schema voice
+            # profile that wouldn't pass voices::load_voice.
+            explicit_ref_wav = req.get("explicit_ref_wav")
+            explicit_ref_txt = req.get("explicit_ref_txt")
+            if explicit_ref_wav is not None:
+                ref_wav_path = Path(explicit_ref_wav)
+                if not ref_wav_path.is_file():
                     raise RuntimeError(
-                        f"voice {voice!r} ref.wav not found at {ref_wav}"
+                        f"explicit_ref_wav not found at {ref_wav_path}"
                     )
-                if not ref_txt.is_file():
+                if explicit_ref_txt is None:
                     raise RuntimeError(
-                        f"voice {voice!r} ref.txt not found at {ref_txt}"
+                        "explicit_ref_wav was set but explicit_ref_txt was missing"
                     )
-                prompt_text = ref_txt.read_text().strip()
-                prompt_tokens = encode_reference(handles, ref_wav)
-                prompt_cache[voice] = (prompt_text, prompt_tokens)
-
-            prompt_text, prompt_tokens = prompt_cache[voice]
+                # Cache by the absolute path string — the Rust client
+                # canonicalizes before sending, so identical refs hit
+                # the same cache slot here too.
+                cache_key = str(ref_wav_path)
+                if cache_key not in prompt_cache:
+                    prompt_tokens = encode_reference(handles, ref_wav_path)
+                    prompt_cache[cache_key] = (explicit_ref_txt, prompt_tokens)
+                prompt_text, prompt_tokens = prompt_cache[cache_key]
+            else:
+                voice = req["voice"]
+                if voice not in prompt_cache:
+                    voice_dir = voices_dir / voice
+                    ref_wav = voice_dir / "ref.wav"
+                    ref_txt = voice_dir / "ref.txt"
+                    if not ref_wav.is_file():
+                        raise RuntimeError(
+                            f"voice {voice!r} ref.wav not found at {ref_wav}"
+                        )
+                    if not ref_txt.is_file():
+                        raise RuntimeError(
+                            f"voice {voice!r} ref.txt not found at {ref_txt}"
+                        )
+                    prompt_text = ref_txt.read_text().strip()
+                    prompt_tokens = encode_reference(handles, ref_wav)
+                    prompt_cache[voice] = (prompt_text, prompt_tokens)
+                prompt_text, prompt_tokens = prompt_cache[voice]
 
             t0 = time.time()
             sr, duration = synth(handles, prompt_text, prompt_tokens, text, out, seed)

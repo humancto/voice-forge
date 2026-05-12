@@ -6,7 +6,7 @@
 //! marker for `voiceforge doctor`.
 
 use anyhow::{anyhow, bail, Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -319,6 +319,136 @@ pub fn read_v1_backup_raw() -> Option<String> {
     std::fs::read_to_string(&path).ok()
 }
 
+// ============================================================================
+// Smoke record (PR-AB step 6d-4)
+//
+// Standalone TOML at ~/.voiceforge/cloning/SMOKE.toml — separate from
+// INSTALLED.toml per rust-expert plan v3 S3. The bash installer never
+// touches this file; the Rust orchestrator is the sole writer. Doctor
+// reads it to append the smoke status to the cloning row.
+// ============================================================================
+
+const SMOKE_RECORD_SCHEMA_VERSION: u32 = 1;
+
+/// Recorded outcome of the most recent post-install smoke synth.
+/// Written atomically (`.tmp` + rename) by the install orchestrator;
+/// read by `voiceforge doctor` for status surfacing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SmokeRecord {
+    pub schema_version: u32,
+    pub ran_at: String,
+    pub passed: bool,
+    pub duration_ms: u64,
+    pub wav_bytes: u64,
+    pub sample_count: usize,
+    #[serde(default)]
+    pub message: String,
+}
+
+impl SmokeRecord {
+    /// Construct a SmokeRecord with the current schema version + an
+    /// ISO-8601 UTC timestamp. The fields the orchestrator typically
+    /// fills in.
+    #[allow(dead_code)]
+    pub fn new(
+        passed: bool,
+        duration_ms: u64,
+        wav_bytes: u64,
+        sample_count: usize,
+        message: String,
+    ) -> Self {
+        Self {
+            schema_version: SMOKE_RECORD_SCHEMA_VERSION,
+            ran_at: iso8601_now(),
+            passed,
+            duration_ms,
+            wav_bytes,
+            sample_count,
+            message,
+        }
+    }
+}
+
+/// Resolve `<voiceforge_home>/cloning/SMOKE.toml`.
+#[allow(dead_code)]
+pub fn smoke_record_path() -> Option<PathBuf> {
+    paths::user_home().map(|h| h.join("cloning").join("SMOKE.toml"))
+}
+
+/// Read the smoke record. Returns Err on missing file OR malformed TOML
+/// — callers (doctor) treat both as "no record yet" and don't render
+/// the smoke row.
+#[allow(dead_code)]
+pub fn read_smoke_record() -> Result<SmokeRecord> {
+    let path = smoke_record_path().ok_or_else(|| anyhow!("could not resolve $VOICEFORGE_HOME"))?;
+    let raw =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let rec: SmokeRecord = toml::from_str(&raw)
+        .with_context(|| format!("parsing {} as SmokeRecord", path.display()))?;
+    if rec.schema_version != SMOKE_RECORD_SCHEMA_VERSION {
+        bail!(
+            "SMOKE.toml schema_version={} but this build expects {}",
+            rec.schema_version,
+            SMOKE_RECORD_SCHEMA_VERSION
+        );
+    }
+    Ok(rec)
+}
+
+/// Write the smoke record atomically: `.tmp` + rename. The tmp file
+/// includes the parent process's pid so two concurrent writers (a
+/// rerun race) can't clobber each other's tmp.
+#[allow(dead_code)]
+pub fn write_smoke_record_atomic(rec: &SmokeRecord) -> Result<()> {
+    let path = smoke_record_path().ok_or_else(|| anyhow!("could not resolve $VOICEFORGE_HOME"))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("SMOKE.toml has no parent dir"))?;
+    std::fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    let body = toml::to_string_pretty(rec).context("serializing SmokeRecord")?;
+    let tmp = parent.join(format!("SMOKE.toml.tmp.{}", std::process::id()));
+    std::fs::write(&tmp, body).with_context(|| format!("writing tmp {}", tmp.display()))?;
+    std::fs::rename(&tmp, &path)
+        .with_context(|| format!("renaming {} -> {}", tmp.display(), path.display()))?;
+    Ok(())
+}
+
+/// Tiny ISO-8601 UTC timestamp formatter. We don't need a full chrono
+/// dep just for this; `std::time::SystemTime` + manual format is enough.
+fn iso8601_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // Convert epoch seconds to a coarse YYYY-MM-DDTHH:MM:SSZ via the
+    // gmtime-style algorithm. Tests don't depend on the exact value;
+    // doctor only displays it.
+    let days = secs / 86_400;
+    let rem = secs % 86_400;
+    let h = rem / 3600;
+    let m = (rem % 3600) / 60;
+    let s = rem % 60;
+    let (y, mo, d) = days_to_ymd(days as i64);
+    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}:{s:02}Z")
+}
+
+/// Days since 1970-01-01 -> (year, month, day). Civil-from-days
+/// algorithm by Howard Hinnant; small, branchless, no deps.
+fn days_to_ymd(days_since_epoch: i64) -> (i32, u32, u32) {
+    let z = days_since_epoch + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = y + if m <= 2 { 1 } else { 0 };
+    (y as i32, m as u32, d as u32)
+}
+
 /// Resolve a `scripts/<name>` file. Walks up from `CARGO_MANIFEST_DIR`
 /// for source builds, and from `current_exe()` for installed binaries.
 /// Used to find both `install_cloning.sh` (v1) and `install_cloning_fish.sh` (v2).
@@ -355,7 +485,7 @@ must be extracted first (PR-AB step 6c will wire that up automatically)."
 /// Branding header (full or compact banner) prints at the very start
 /// of a normal install. Suppressed for `--check` and `--uninstall`
 /// because those are noisy + fast and the banner would be in the way.
-pub fn run(force: bool, check: bool, uninstall: bool) -> Result<()> {
+pub async fn run(force: bool, check: bool, uninstall: bool) -> Result<()> {
     if [force, check, uninstall].iter().filter(|b| **b).count() > 1 {
         bail!("--force, --check, --uninstall are mutually exclusive");
     }
@@ -385,20 +515,76 @@ pub fn run(force: bool, check: bool, uninstall: bool) -> Result<()> {
             if force { "1" } else { "0" },
         );
 
-    let status = if use_wizard {
-        install_ui::run_with_wizard(&mut cmd, engine.approx_phase_count(), engine.human_title())
-            .with_context(|| format!("running install wizard for {}", script.display()))?
+    // Smoke synth opt-out (PR-AB step 6d-7). Set by automated installers
+    // (Homebrew bottle tests, CI that just wants the bash phase to succeed)
+    // that don't want the 30-90s smoke phase. The orchestrator NEVER sets
+    // this in production.
+    let skip_smoke = std::env::var("VOICEFORGE_INSTALL_CLONING_SKIP_SMOKE")
+        .ok()
+        .is_some_and(|v| !v.is_empty());
+
+    let should_smoke = engine == InstallEngine::FishSpeechS2Pro && mode == "normal" && !skip_smoke;
+
+    if use_wizard {
+        match install_ui::run_with_wizard_keep_alive(
+            &mut cmd,
+            engine.approx_phase_count(),
+            engine.human_title(),
+        )
+        .with_context(|| format!("running install wizard for {}", script.display()))?
+        {
+            install_ui::WizardOutcome::Failed { status } => {
+                bail!("{} exited non-zero: {status}", engine.script_filename());
+            }
+            install_ui::WizardOutcome::Success { mp } => {
+                if should_smoke {
+                    let bar = install_ui::add_smoke_phase(
+                        &mp,
+                        "smoke testing voice clone (~30-90s on CPU)",
+                    );
+                    let smoke = crate::install_smoke::run_smoke_test().await;
+                    let result = smoke.unwrap_or_else(|e| crate::install_smoke::SmokeResult {
+                        passed: false,
+                        duration_ms: 0,
+                        wav_bytes: 0,
+                        sample_count: 0,
+                        message: format!("smoke orchestrator failed: {e:#}"),
+                    });
+                    let summary = if result.passed {
+                        format!(
+                            "smoke passed in {}ms ({} bytes, {} samples)",
+                            result.duration_ms, result.wav_bytes, result.sample_count
+                        )
+                    } else {
+                        format!("smoke failed: {}", result.message)
+                    };
+                    install_ui::finish_smoke_phase(bar, result.passed, &summary);
+                    let _ = write_smoke_record_atomic(&SmokeRecord::new(
+                        result.passed,
+                        result.duration_ms,
+                        result.wav_bytes,
+                        result.sample_count,
+                        result.message,
+                    ));
+                }
+                drop(mp);
+            }
+        }
     } else {
         cmd.stdin(Stdio::null())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
-        cmd.status()
-            .with_context(|| format!("spawning {}", script.display()))?
-    };
-
-    if !status.success() {
-        bail!("{} exited non-zero: {status}", engine.script_filename());
+        let status = cmd
+            .status()
+            .with_context(|| format!("spawning {}", script.display()))?;
+        if !status.success() {
+            bail!("{} exited non-zero: {status}", engine.script_filename());
+        }
+        // No-wizard path = piped output (non-TTY or color suppressed).
+        // Skip smoke — the spinner UX has nowhere to render and adding
+        // 30-90s of silent wall time would surprise the user.
     }
+
     Ok(())
 }
 
@@ -512,9 +698,9 @@ chinese_hubert_base = "24164f12"
         });
     }
 
-    #[test]
-    fn run_rejects_conflicting_flags() {
-        let err = run(true, true, false).unwrap_err();
+    #[tokio::test]
+    async fn run_rejects_conflicting_flags() {
+        let err = run(true, true, false).await.unwrap_err();
         assert!(format!("{err:#}").contains("mutually exclusive"));
     }
 
@@ -753,5 +939,113 @@ ffmpeg6_prefix = "z"
             assert!(p.starts_with(tmp.path()), "{}", p.display());
             assert!(p.ends_with("INSTALLED.v1.bak"));
         });
+    }
+
+    // ========================================================================
+    // SmokeRecord (PR-AB step 6d-4)
+    // ========================================================================
+
+    #[test]
+    #[serial]
+    fn smoke_record_path_under_voiceforge_home() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), || {
+            let p = smoke_record_path().expect("path");
+            assert!(p.starts_with(tmp.path()));
+            assert!(p.ends_with("SMOKE.toml"));
+            assert!(p.parent().unwrap().ends_with("cloning"));
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn read_smoke_record_returns_error_when_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), || {
+            let err = read_smoke_record().unwrap_err();
+            assert!(format!("{err:#}").contains("reading"));
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn smoke_record_round_trips_through_atomic_write() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), || {
+            let written = SmokeRecord::new(true, 12345, 196608, 98304, String::new());
+            write_smoke_record_atomic(&written).expect("write");
+            let read = read_smoke_record().expect("read");
+            assert_eq!(read.passed, written.passed);
+            assert_eq!(read.duration_ms, written.duration_ms);
+            assert_eq!(read.wav_bytes, written.wav_bytes);
+            assert_eq!(read.sample_count, written.sample_count);
+            assert_eq!(read.message, written.message);
+            assert_eq!(read.schema_version, SMOKE_RECORD_SCHEMA_VERSION);
+            // ran_at is "now"; we don't pin the exact value but it must
+            // look like an ISO-8601 string with a T and Z.
+            assert!(read.ran_at.contains('T'));
+            assert!(read.ran_at.ends_with('Z'));
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn smoke_record_atomic_write_replaces_existing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), || {
+            // First write
+            let r1 = SmokeRecord::new(false, 100, 0, 0, "first attempt".into());
+            write_smoke_record_atomic(&r1).expect("write 1");
+            assert_eq!(read_smoke_record().unwrap().message, "first attempt");
+
+            // Overwrite — second install run produces a passing smoke
+            let r2 = SmokeRecord::new(true, 200, 196608, 98304, String::new());
+            write_smoke_record_atomic(&r2).expect("write 2");
+            let r2_read = read_smoke_record().unwrap();
+            assert!(r2_read.passed);
+            assert_eq!(r2_read.message, "");
+            assert_eq!(r2_read.duration_ms, 200);
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn read_smoke_record_rejects_unknown_schema_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), || {
+            let dir = tmp.path().join("cloning");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("SMOKE.toml"),
+                "schema_version = 99\nran_at = \"x\"\npassed = true\nduration_ms = 0\nwav_bytes = 0\nsample_count = 0\nmessage = \"\"\n",
+            ).unwrap();
+            let err = read_smoke_record().unwrap_err();
+            assert!(format!("{err:#}").contains("schema_version"));
+        });
+    }
+
+    #[test]
+    fn iso8601_now_has_iso_shape() {
+        let s = iso8601_now();
+        // YYYY-MM-DDTHH:MM:SSZ = 20 chars
+        assert_eq!(s.len(), 20, "want 20 chars, got: {s:?}");
+        assert!(s.contains('T'));
+        assert!(s.ends_with('Z'));
+        assert_eq!(s.as_bytes()[4], b'-');
+        assert_eq!(s.as_bytes()[7], b'-');
+        assert_eq!(s.as_bytes()[10], b'T');
+        assert_eq!(s.as_bytes()[13], b':');
+        assert_eq!(s.as_bytes()[16], b':');
+    }
+
+    #[test]
+    fn days_to_ymd_handles_known_dates() {
+        // 2026-05-12 = day 20585 since 1970-01-01
+        let (y, m, d) = days_to_ymd(20_585);
+        assert_eq!((y, m, d), (2026, 5, 12));
+        // Epoch
+        assert_eq!(days_to_ymd(0), (1970, 1, 1));
+        // Y2K
+        assert_eq!(days_to_ymd(10_957), (2000, 1, 1));
     }
 }

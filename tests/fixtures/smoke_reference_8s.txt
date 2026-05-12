@@ -1,1 +1,1 @@
-This is a placeholder smoke fixture transcript. PR-AB step 6 will replace this with a real public-domain LibriVox clip transcript.
+voiceforge smoke test reference clip. This audio is used by the post install smoke synth to verify that the fish speech runtime can encode a reference and produce a valid output waveform.

@@ -50,6 +50,24 @@ pub fn parse_phase_line(line: &str) -> Option<&str> {
     line.strip_prefix(PHASE_MARKER).map(str::trim)
 }
 
+/// Outcome of a wizard-driven install (PR-AB step 6d-6 N1 contract).
+///
+/// **Asymmetric by design**: `Failed` does NOT carry the `MultiProgress`,
+/// so the caller cannot misuse a "MultiProgress with garbage on it" —
+/// the failure path's bar teardown + log dump is internal. The success
+/// path keeps `mp` alive so the caller can attach a smoke-phase
+/// spinner via `add_smoke_phase` before final teardown.
+pub enum WizardOutcome {
+    /// Bash exited successfully. Header bar is `finish_with_message("done")`
+    /// and visible; phase_bar is `finish_and_clear`'d (gone). Caller
+    /// may add a fresh spinner via `add_smoke_phase(&mp)` for the
+    /// smoke phase.
+    Success { mp: MultiProgress },
+    /// Bash exited non-zero. Bars already abandoned; captured-stdout
+    /// last-80-lines dump already on stderr. Caller bails up.
+    Failed { status: ExitStatus },
+}
+
 /// Run a `Command` with the indicatif install wizard wrapped around
 /// it. The command's stdout is read line-by-line; each `==> ` line
 /// advances the wizard. The command's stderr passes through untouched
@@ -58,9 +76,50 @@ pub fn parse_phase_line(line: &str) -> Option<&str> {
 /// On non-success exit, the captured stdout is dumped *after* the
 /// progress bars are torn down so the user sees the full install log.
 ///
+/// **Backward-compatible thin wrapper** around `run_with_wizard_keep_alive`
+/// — discards the kept-alive MultiProgress on success. Callers that
+/// want to add a post-bash smoke phase should call
+/// `run_with_wizard_keep_alive` directly.
+///
 /// `total_phases` is a hint for the bar's length; the wizard tolerates
 /// over- or under-count (last phase just lingers / bar wraps).
+///
+/// Kept around for the existing test surface + future callers who don't
+/// need the post-bash phase. PR-AB step 6d-7 switched the prod call
+/// site to `run_with_wizard_keep_alive` directly so the smoke phase
+/// could attach. `#[allow(dead_code)]` because nothing in production
+/// calls it today.
+#[allow(dead_code)]
 pub fn run_with_wizard(cmd: &mut Command, total_phases: usize, title: &str) -> Result<ExitStatus> {
+    match run_with_wizard_keep_alive(cmd, total_phases, title)? {
+        WizardOutcome::Success { mp } => {
+            drop(mp);
+            // Reconstruct success exit status — there's no portable
+            // ExitStatus::from_raw on all platforms in std, so we
+            // shell out to `true` for a real success. Cheap.
+            std::process::Command::new("true")
+                .status()
+                .context("synthesizing success ExitStatus")
+        }
+        WizardOutcome::Failed { status } => Ok(status),
+    }
+}
+
+/// Same as `run_with_wizard` but returns the live `MultiProgress` on
+/// success so the caller can attach a post-bash phase (e.g., the
+/// post-install smoke synth in PR-AB step 6d-7) before tearing down.
+///
+/// **Bar lifecycle (per N1 contract):**
+///   - Success: `header.finish_with_message("done")` (visible),
+///     `phase_bar.finish_and_clear()` (gone). MultiProgress returned.
+///   - Failure: `header.abandon_with_message("FAILED")`,
+///     `phase_bar.abandon()`, captured-stdout dumped to stderr.
+///     MultiProgress dropped internally.
+pub fn run_with_wizard_keep_alive(
+    cmd: &mut Command,
+    total_phases: usize,
+    title: &str,
+) -> Result<WizardOutcome> {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
@@ -125,13 +184,17 @@ pub fn run_with_wizard(cmd: &mut Command, total_phases: usize, title: &str) -> R
         .map_err(|_| anyhow::anyhow!("wizard reader thread panicked"))?;
 
     if status.success() {
+        // Per N1: header stays VISIBLE ("done"), phase_bar disappears.
+        // MP returned to caller. Caller may now add a smoke spinner.
         header.finish_with_message("done");
         phase_bar.finish_and_clear();
+        Ok(WizardOutcome::Success { mp })
     } else {
         header.abandon_with_message("FAILED");
         phase_bar.abandon();
         // Dump captured stdout AFTER tearing down progress bars so the
-        // log is readable.
+        // log is readable. Done internally so the caller can't see a
+        // MultiProgress with garbage on it.
         let log = captured.lock().unwrap();
         eprintln!(
             "\n--- install_cloning_fish.sh stdout (last {} lines) ---",
@@ -142,8 +205,41 @@ pub fn run_with_wizard(cmd: &mut Command, total_phases: usize, title: &str) -> R
             eprintln!("{line}");
         }
         eprintln!("--- end log ---\n");
+        drop(mp);
+        Ok(WizardOutcome::Failed { status })
     }
-    Ok(status)
+}
+
+/// Add a post-bash phase spinner to the live MultiProgress (returned
+/// from `WizardOutcome::Success`). Used by the post-install smoke
+/// synth in PR-AB step 6d-7.
+///
+/// **Per N1**: nothing here finishes the existing header (it's already
+/// `finish_with_message("done")` at this point). The new spinner
+/// appears below the "done" header, which reads correctly because
+/// "done" means "the bash phase completed" — the smoke phase is a
+/// separate gate.
+pub fn add_smoke_phase(mp: &MultiProgress, message: &str) -> ProgressBar {
+    let bar = mp.add(ProgressBar::new_spinner());
+    bar.set_style(
+        ProgressStyle::with_template("    {spinner:.cyan} {msg}")
+            .unwrap()
+            .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ "),
+    );
+    bar.enable_steady_tick(Duration::from_millis(120));
+    bar.set_message(message.to_string());
+    bar
+}
+
+/// Finish the smoke-phase spinner with a result-shaped message.
+/// `passed=true` -> ✓ + green-ish message; `passed=false` -> ✗ +
+/// abandoned (red-tinted by indicatif's default abandoned style).
+pub fn finish_smoke_phase(bar: ProgressBar, passed: bool, message: &str) {
+    if passed {
+        bar.finish_with_message(format!("✓ {message}"));
+    } else {
+        bar.abandon_with_message(format!("✗ {message}"));
+    }
 }
 
 // ============================================================================
@@ -366,5 +462,98 @@ mod tests {
         let status = run_with_wizard(&mut cmd, 1, "wizard fail test").expect("invoke");
         assert!(!status.success());
         assert_eq!(status.code(), Some(7), "exit code must propagate");
+    }
+
+    // ========================================================================
+    // PR-AB step 6d-6: WizardOutcome + add_smoke_phase / finish_smoke_phase
+    // (rust-expert plan v3 N1 contract)
+    // ========================================================================
+
+    #[test]
+    fn run_with_wizard_keep_alive_returns_success_with_mp() {
+        let mut cmd = Command::new("bash");
+        cmd.arg("-c").arg(
+            "printf '\\n==> phase one\\n'; printf '\\n==> phase two\\n'; printf '\\n==> phase three\\n'",
+        );
+        let outcome =
+            run_with_wizard_keep_alive(&mut cmd, 3, "wizard keep-alive test").expect("invoke");
+        match outcome {
+            WizardOutcome::Success { mp } => {
+                // MP is alive; we can attach a new spinner without panicking.
+                let _bar = add_smoke_phase(&mp, "post-bash phase");
+                drop(mp);
+            }
+            WizardOutcome::Failed { status } => {
+                panic!("expected Success, got Failed({status})")
+            }
+        }
+    }
+
+    #[test]
+    fn run_with_wizard_keep_alive_returns_failed_without_mp() {
+        let mut cmd = Command::new("bash");
+        cmd.arg("-c").arg("printf '\\n==> doomed\\n'; exit 11");
+        let outcome =
+            run_with_wizard_keep_alive(&mut cmd, 1, "wizard keep-alive fail test").expect("invoke");
+        match outcome {
+            WizardOutcome::Failed { status } => {
+                assert_eq!(status.code(), Some(11), "exit code must propagate");
+                // No `mp` field — the type system makes "use the MP after
+                // failure" structurally impossible. That's the N1 fix.
+            }
+            WizardOutcome::Success { .. } => panic!("expected Failed, got Success"),
+        }
+    }
+
+    #[test]
+    fn add_smoke_phase_returns_a_progress_bar_with_message() {
+        let mp = MultiProgress::new();
+        let bar = add_smoke_phase(&mp, "smoke testing voice clone (~30-90s)");
+        assert!(bar.message().contains("smoke testing"));
+        bar.finish_and_clear();
+    }
+
+    #[test]
+    fn finish_smoke_phase_pass_uses_check_marker() {
+        let mp = MultiProgress::new();
+        let bar = add_smoke_phase(&mp, "smoke");
+        finish_smoke_phase(bar.clone(), true, "smoke passed in 1234ms");
+        assert!(
+            bar.message().contains("✓"),
+            "passed must use ✓; got: {}",
+            bar.message()
+        );
+        assert!(bar.is_finished());
+    }
+
+    #[test]
+    fn finish_smoke_phase_fail_uses_x_marker_and_abandons() {
+        let mp = MultiProgress::new();
+        let bar = add_smoke_phase(&mp, "smoke");
+        finish_smoke_phase(bar.clone(), false, "synth child died");
+        assert!(
+            bar.message().contains("✗"),
+            "failed must use ✗; got: {}",
+            bar.message()
+        );
+        assert!(
+            bar.message().contains("synth child died"),
+            "failure message must propagate; got: {}",
+            bar.message()
+        );
+        // abandoned bars are still considered "finished" in indicatif's
+        // sense; the abandon vs finish distinction is for visual styling.
+        assert!(bar.is_finished());
+    }
+
+    /// Backward-compat: the existing `run_with_wizard` thin-wrapper
+    /// must continue to return `Result<ExitStatus>` cleanly. Both
+    /// success + failure paths.
+    #[test]
+    fn run_with_wizard_legacy_wrapper_round_trips_success() {
+        let mut cmd = Command::new("bash");
+        cmd.arg("-c").arg("printf '\\n==> ok\\n'");
+        let status = run_with_wizard(&mut cmd, 1, "legacy wrapper success").expect("invoke");
+        assert!(status.success());
     }
 }

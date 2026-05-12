@@ -505,6 +505,31 @@ fn check_cloning() -> Check {
         Some(hint) => format!("{detail}{hint}"),
         None => detail,
     };
+
+    // PR-AB step 6d-4: append the smoke status if a SMOKE.toml record
+    // exists. Doctor stays quiet when the record is absent OR malformed
+    // — this is purely a "did the post-install smoke pass?" diagnostic
+    // overlay, not a gating signal.
+    let detail = match install_cloning::read_smoke_record() {
+        Ok(rec) if rec.passed => format!(
+            "{detail}, smoke: ✓ ({}ms, {} bytes)",
+            rec.duration_ms, rec.wav_bytes
+        ),
+        Ok(rec) => {
+            // Failed smoke: surface the message + the actionable hint.
+            // Truncate the message to 80 chars so the doctor row stays
+            // single-line.
+            let mut msg: String = rec.message.chars().take(80).collect();
+            if rec.message.chars().count() > 80 {
+                msg.push('…');
+            }
+            format!(
+                "{detail}, smoke: ✗ (run `voiceforge install-cloning --check`; last err: {msg})"
+            )
+        }
+        Err(_) => detail, // no record yet — quiet
+    };
+
     ok("cloning", detail)
 }
 
