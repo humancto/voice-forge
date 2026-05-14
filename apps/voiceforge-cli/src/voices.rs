@@ -424,6 +424,383 @@ pub fn remove_cloned_voice(name: &str) -> Result<()> {
     Ok(())
 }
 
+// ============================================================================
+// PR-C-b: voice profile migration (v1 → v2)
+// ============================================================================
+//
+// Convert an existing v1 voice (recipe=gpt-sovits-v2-multi-aux-ref) to v2
+// (recipe=fish-speech-s2-pro) in place, preserving the cache-key invariants
+// and leaving a recoverable `.v1.bak/` child dir.
+//
+// Atomic protocol uses two sibling staging dirs:
+//   - `<voice>.partial-migrate/`  — staged v2 dir being built
+//   - `<voice>.migrating-old/`    — old v1 dir moved aside during the flip
+//
+// Crash recovery is encoded in `PreflightState` (see below). The flip itself
+// is verify-before-cleanup with rollback on verify failure — see
+// `apps/voiceforge-cli/src/packs.rs:920-948` for the same pattern used in
+// pack installation.
+
+/// Outcome of a `migrate_voice` invocation. Enum (not a struct of options)
+/// so the typestate contract — "either we no-op'd or we migrated" — is
+/// compiler-checked.
+#[derive(Debug, Clone, PartialEq)]
+#[must_use = "the migrate report names the .v1.bak path users need"]
+pub enum MigrateReport {
+    /// Voice was already on schema 2; migrate was a no-op.
+    AlreadyMigrated {
+        voice_name: String,
+        /// Path to a `.v1.bak/` recovery dir if it exists on disk
+        /// (from a prior migration). Surfaced so repeat invocations
+        /// remind the user where the recovery files live.
+        v1_bak_path: Option<PathBuf>,
+    },
+    /// Voice was migrated from schema 1 → schema 2 by this invocation.
+    Migrated {
+        voice_name: String,
+        original_recipe: String,
+        new_recipe: String,
+        v1_bak_path: PathBuf,
+    },
+}
+
+// `#[allow(dead_code)]`: the accessors are used in `#[cfg(test)]` and
+// will be used by `main.rs`'s dispatch arm in commit B-2.
+#[allow(dead_code)]
+impl MigrateReport {
+    pub fn voice_name(&self) -> &str {
+        match self {
+            Self::AlreadyMigrated { voice_name, .. } => voice_name,
+            Self::Migrated { voice_name, .. } => voice_name,
+        }
+    }
+    pub fn already_migrated(&self) -> bool {
+        matches!(self, Self::AlreadyMigrated { .. })
+    }
+}
+
+/// The 8 possible disk states for a voice + its two staging-dir siblings.
+/// Computed by `preflight_state` at the start of every migrate run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreflightState {
+    /// peter/ present; no leftovers. Normal flow.
+    Clean,
+    /// peter/ present + peter.migrating-old/ leftover. Need --force to nuke.
+    StrandedOld,
+    /// peter/ present + peter.partial-migrate/ leftover. Need --force.
+    StrandedStage,
+    /// peter/ present + BOTH leftovers. Mid-protocol crash; need --force.
+    CompoundStranded,
+    /// peter/ absent + only peter.partial-migrate/ on disk. Need --force.
+    /// Even with --force this bails: there's nothing to migrate.
+    OnlyStage,
+    /// peter/ absent + only peter.migrating-old/ on disk. Refuse even with
+    /// --force — we won't silently resurrect a removed voice.
+    OnlyOldNoForceResurrect,
+    /// peter/ absent + BOTH leftovers. Legitimate 6a→6b crash window:
+    /// auto-rollback (unconditionally) and proceed with normal flow.
+    SelfHealMidFlip,
+    /// Nothing on disk under any of the three names.
+    MissingVoice,
+}
+
+fn voice_dir_unvalidated(name: &str) -> Result<(PathBuf, PathBuf, PathBuf)> {
+    validate_name(name)?;
+    let root = voices_dir().ok_or_else(|| anyhow!("could not resolve voices dir"))?;
+    Ok((
+        root.join(name),
+        root.join(format!("{name}.partial-migrate")),
+        root.join(format!("{name}.migrating-old")),
+    ))
+}
+
+fn preflight_state(live: &Path, stage: &Path, old: &Path) -> PreflightState {
+    match (live.is_dir(), stage.is_dir(), old.is_dir()) {
+        (true, false, false) => PreflightState::Clean,
+        (true, false, true) => PreflightState::StrandedOld,
+        (true, true, false) => PreflightState::StrandedStage,
+        (true, true, true) => PreflightState::CompoundStranded,
+        (false, true, false) => PreflightState::OnlyStage,
+        (false, false, true) => PreflightState::OnlyOldNoForceResurrect,
+        (false, true, true) => PreflightState::SelfHealMidFlip,
+        (false, false, false) => PreflightState::MissingVoice,
+    }
+}
+
+/// RAII guard: nukes the staging dir on `Drop` unless `armed` is flipped to
+/// false. Closes rust-expert B3: scope-guarded multi-file copy cleanup.
+struct StagingGuard<'a> {
+    path: &'a Path,
+    armed: bool,
+}
+
+impl Drop for StagingGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_dir_all(self.path);
+        }
+    }
+}
+
+/// Migrate a v1 voice profile to v2 in place. See the protocol comment
+/// above for the disk-shape contract + crash-recovery rules. Idempotent
+/// on already-v2. `force` clobbers leftover staging dirs from a prior
+/// interrupted run.
+// `#[allow(dead_code)]` strips in commit B-2 when `main.rs::VoicesAction::Migrate`
+// arm is wired up.
+#[allow(dead_code)]
+pub fn migrate_voice(name: &str, force: bool) -> Result<MigrateReport> {
+    migrate_voice_inner(name, force, &|| Ok(()))
+}
+
+/// Test-only entry point exposing a post-flip verification hook so we can
+/// simulate a verify failure and assert the rollback restores the v1 state.
+#[cfg(test)]
+fn migrate_voice_test_hook(
+    name: &str,
+    force: bool,
+    hook: &dyn Fn() -> Result<()>,
+) -> Result<MigrateReport> {
+    migrate_voice_inner(name, force, hook)
+}
+
+fn migrate_voice_inner(
+    name: &str,
+    force: bool,
+    post_flip_hook: &dyn Fn() -> Result<()>,
+) -> Result<MigrateReport> {
+    let (live, stage, old) = voice_dir_unvalidated(name)?;
+    let state = preflight_state(&live, &stage, &old);
+
+    // ---- preflight cleanup / refusal -------------------------------------
+    match state {
+        PreflightState::Clean => { /* normal flow */ }
+        PreflightState::StrandedStage => {
+            if !force {
+                bail!(
+                    "voice {name:?}: leftover staging dir at {}; \
+                     re-run with --force to clean up",
+                    stage.display()
+                );
+            }
+            std::fs::remove_dir_all(&stage)
+                .with_context(|| format!("nuking {}", stage.display()))?;
+        }
+        PreflightState::StrandedOld => {
+            if !force {
+                bail!(
+                    "voice {name:?}: leftover from prior migration at {}; \
+                     re-run with --force to clean up",
+                    old.display()
+                );
+            }
+            std::fs::remove_dir_all(&old).with_context(|| format!("nuking {}", old.display()))?;
+        }
+        PreflightState::CompoundStranded => {
+            if !force {
+                bail!(
+                    "voice {name:?}: prior migration crashed mid-protocol; \
+                     stragglers at {} and {}; re-run with --force",
+                    stage.display(),
+                    old.display()
+                );
+            }
+            std::fs::remove_dir_all(&stage)
+                .with_context(|| format!("nuking {}", stage.display()))?;
+            std::fs::remove_dir_all(&old).with_context(|| format!("nuking {}", old.display()))?;
+        }
+        PreflightState::SelfHealMidFlip => {
+            // The one auto-heal case (rust-expert S1.2): peter/ is absent
+            // AND partial-migrate/ is present AND migrating-old/ is present
+            // — unambiguous mid-flip crash. Nuke the half-built staging
+            // dir and restore the v1 from migrating-old/, then proceed
+            // with the normal flow.
+            std::fs::remove_dir_all(&stage)
+                .with_context(|| format!("nuking {}", stage.display()))?;
+            std::fs::rename(&old, &live).with_context(|| {
+                format!("rollback rename {} -> {}", old.display(), live.display())
+            })?;
+        }
+        PreflightState::OnlyStage => {
+            if !force {
+                bail!(
+                    "voice {name:?}: leftover staging dir at {} but no live voice; \
+                     re-run with --force to clean up (will then report voice-not-found)",
+                    stage.display()
+                );
+            }
+            std::fs::remove_dir_all(&stage)
+                .with_context(|| format!("nuking {}", stage.display()))?;
+            bail!("voice {name:?} not found");
+        }
+        PreflightState::OnlyOldNoForceResurrect => {
+            bail!(
+                "voice {name:?}: only a leftover migrating-old dir at {} — \
+                 refusing to silently resurrect a previously-removed voice. \
+                 If you want it back, manually rename: mv {} {}",
+                old.display(),
+                old.display(),
+                live.display(),
+            );
+        }
+        PreflightState::MissingVoice => {
+            bail!("voice {name:?} not found");
+        }
+    }
+
+    // ---- load + idempotency check ----------------------------------------
+    let profile = load_voice(name)?;
+    let v1 = match profile {
+        VoiceProfile::V1(v1) => v1,
+        VoiceProfile::V2(_) => {
+            // Already v2: no-op exit 0. Surface .v1.bak/ path if a prior
+            // migration left one (rust-expert: makes the idempotent path
+            // still informative on repeat runs).
+            let bak = live.join(".v1.bak");
+            return Ok(MigrateReport::AlreadyMigrated {
+                voice_name: name.to_string(),
+                v1_bak_path: if bak.is_dir() { Some(bak) } else { None },
+            });
+        }
+    };
+
+    // Pre-flip notice (rust-expert Q3 partial: name the dirs before any
+    // disk change so a Ctrl-C window leaves the user informed).
+    eprintln!(
+        "voiceforge: migrating {name} (v1 → v2). Staging at {}, original at {}.",
+        stage.display(),
+        live.display(),
+    );
+
+    // ---- step 3/4: build staging dir under a Drop guard ------------------
+    std::fs::create_dir_all(&stage).with_context(|| format!("mkdir {}", stage.display()))?;
+    let mut guard = StagingGuard {
+        path: &stage,
+        armed: true,
+    };
+    build_v2_staging(&v1, &live, &stage)?;
+    guard.armed = false; // staging committed; no more rollback in this fn.
+
+    // ---- step 5: flip + verify ------------------------------------------
+    std::fs::rename(&live, &old)
+        .with_context(|| format!("rename {} -> {}", live.display(), old.display()))?;
+    if let Err(e) = std::fs::rename(&stage, &live) {
+        // 5b rollback (rust-expert nit-1): if rename(stage → live) fails
+        // after we've already renamed live → old, restore the v1 state.
+        let _ = std::fs::rename(&old, &live);
+        return Err(anyhow!(
+            "rename {} -> {} failed: {}; v1 state restored",
+            stage.display(),
+            live.display(),
+            e
+        ));
+    }
+
+    // Verify the new live dir loads as V2; run the post-flip hook.
+    let verify_result = (|| {
+        let loaded = load_voice(name)?;
+        match loaded {
+            VoiceProfile::V2(_) => post_flip_hook(),
+            VoiceProfile::V1(_) => bail!(
+                "post-flip verification: load_voice returned V1 for {name:?} \
+                 (expected V2); migration is logically broken"
+            ),
+        }
+    })();
+
+    if let Err(verify_err) = verify_result {
+        // Rollback: move the (broken or hook-rejected) v2 dir back to
+        // staging-name, restore migrating-old → live. After rollback the
+        // disk state is functionally identical to the pre-migrate state
+        // plus a leftover `partial-migrate/` staging dir.
+        let _ = std::fs::rename(&live, &stage);
+        let _ = std::fs::rename(&old, &live);
+        bail!(
+            "post-flip verification failed: {:#}. Rolled back to v1 state. \
+             Leftover staging dir at {} can be cleaned with --force.",
+            verify_err,
+            stage.display()
+        );
+    }
+
+    // ---- step 5d: best-effort cleanup of migrating-old/ -----------------
+    // Tidiness, not correctness. If this fails the next --force run mops up.
+    if let Err(e) = std::fs::remove_dir_all(&old) {
+        eprintln!(
+            "voiceforge: failed to clean up {}: {} (will be retried on next \
+             voices migrate --force)",
+            old.display(),
+            e
+        );
+    }
+
+    Ok(MigrateReport::Migrated {
+        voice_name: name.to_string(),
+        original_recipe: v1.recipe.clone(),
+        new_recipe: "fish-speech-s2-pro".to_string(),
+        v1_bak_path: live.join(".v1.bak"),
+    })
+}
+
+/// Build the v2 staging dir: new profile.toml, ref.wav/.txt at top level,
+/// `.v1.bak/` child with copies of all v1 artifacts. Every fallible op
+/// inside relies on the `StagingGuard` in the caller for cleanup on error.
+fn build_v2_staging(v1: &VoiceProfileV1, live: &Path, stage: &Path) -> Result<()> {
+    // 4a: write the new v2 profile.toml. Preserve name/source/created_at/
+    // duration_seconds — the cache-key salt-domain change (v1 →
+    // fish-speech-s2-pro) handles re-synth naturally per locked
+    // architecture decision #4, so we do NOT bump created_at.
+    let new_profile_toml = format!(
+        "schema_version = 2\n\
+         name = \"{name}\"\n\
+         source = \"{source}\"\n\
+         created_at = \"{created_at}\"\n\
+         duration_seconds = {duration_seconds}\n\
+         recipe = \"fish-speech-s2-pro\"\n",
+        name = toml_escape(&v1.name),
+        source = toml_escape(&v1.source),
+        created_at = toml_escape(&v1.created_at),
+        duration_seconds = v1.duration_seconds,
+    );
+    std::fs::write(stage.join("profile.toml"), &new_profile_toml)
+        .with_context(|| format!("writing {}/profile.toml", stage.display()))?;
+
+    // 4b/4c: ref_main → ref at top level.
+    std::fs::copy(live.join("ref_main.wav"), stage.join("ref.wav"))
+        .with_context(|| "copying ref_main.wav -> ref.wav")?;
+    std::fs::copy(live.join("ref_main.txt"), stage.join("ref.txt"))
+        .with_context(|| "copying ref_main.txt -> ref.txt")?;
+
+    // 4d/4e/4f: .v1.bak/ child with original profile + ref + aux pairs.
+    let bak = stage.join(".v1.bak");
+    std::fs::create_dir_all(&bak).with_context(|| format!("mkdir {}", bak.display()))?;
+    std::fs::copy(live.join("profile.toml"), bak.join("profile.toml"))
+        .with_context(|| "copying profile.toml -> .v1.bak/profile.toml")?;
+    std::fs::copy(live.join("ref_main.wav"), bak.join("ref_main.wav"))
+        .with_context(|| "copying ref_main.wav -> .v1.bak/ref_main.wav")?;
+    std::fs::copy(live.join("ref_main.txt"), bak.join("ref_main.txt"))
+        .with_context(|| "copying ref_main.txt -> .v1.bak/ref_main.txt")?;
+    for i in 1..=v1.aux_count {
+        let src_wav = live.join(format!("aux_{i}.wav"));
+        let src_txt = live.join(format!("aux_{i}.txt"));
+        let dst_wav = bak.join(format!("aux_{i}.wav"));
+        let dst_txt = bak.join(format!("aux_{i}.txt"));
+        std::fs::copy(&src_wav, &dst_wav)
+            .with_context(|| format!("copying {} -> {}", src_wav.display(), dst_wav.display()))?;
+        std::fs::copy(&src_txt, &dst_txt)
+            .with_context(|| format!("copying {} -> {}", src_txt.display(), dst_txt.display()))?;
+    }
+    Ok(())
+}
+
+/// Minimal TOML basic-string escaper: " and \ get backslash-escaped.
+/// The values we serialize (voice name, source path, created_at) are
+/// already-constrained by `validate_name` / clone-time invariants, but
+/// defending against future loosening is cheap.
+fn toml_escape(s: &str) -> String {
+    s.replace('\\', r"\\").replace('"', "\\\"")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -915,6 +1292,452 @@ aux_count = 5
         with_home(tmp.path(), |_| {
             let err = remove_cloned_voice("nonexistent").unwrap_err();
             assert!(format!("{err:#}").contains("not found"));
+        });
+    }
+
+    // ========================================================================
+    // PR-C-b: migrate_voice (v1 → v2)
+    // ========================================================================
+
+    /// Variant of `write_full_profile` with a tunable `aux_count` so we
+    /// can prove `migrate_voice` handles N != 5 (rust-expert R4).
+    fn write_full_profile_with_aux_count(home: &Path, name: &str, aux_count: usize) {
+        let dir = home.join("voices").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let toml = format!(
+            r#"
+schema_version = 1
+name = "{name}"
+source = "/tmp/x.wav"
+created_at = "2026-05-04T00:00:00Z"
+duration_seconds = 60.0
+recipe = "gpt-sovits-v2-multi-aux-ref"
+aux_count = {aux_count}
+"#
+        );
+        std::fs::write(dir.join("profile.toml"), toml).unwrap();
+        std::fs::write(dir.join("ref_main.wav"), b"RIFF\0\0\0\0WAVE").unwrap();
+        std::fs::write(dir.join("ref_main.txt"), b"main").unwrap();
+        for i in 1..=aux_count {
+            std::fs::write(dir.join(format!("aux_{i}.wav")), b"RIFF\0\0\0\0WAVE").unwrap();
+            std::fs::write(dir.join(format!("aux_{i}.txt")), format!("aux_{i}")).unwrap();
+        }
+    }
+
+    /// Test #1: post-migrate, profile.toml is v2 + load_voice returns V2.
+    #[test]
+    #[serial]
+    fn migrate_v1_writes_v2_profile_in_place() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), |home| {
+            write_full_profile(home, "peter", "gpt-sovits-v2-multi-aux-ref");
+            let report = migrate_voice("peter", false).expect("migrate");
+            assert!(!report.already_migrated());
+            let raw = std::fs::read_to_string(home.join("voices/peter/profile.toml")).unwrap();
+            assert!(raw.contains("schema_version = 2"), "got: {raw}");
+            assert!(
+                raw.contains(r#"recipe = "fish-speech-s2-pro""#),
+                "got: {raw}"
+            );
+            let v = load_voice("peter").unwrap();
+            assert_eq!(v.schema_version(), 2);
+        });
+    }
+
+    /// Test #2: cache-key invariants preserved (rust-expert: cache salt
+    /// domain change handles re-synth; the FIELDS must stay byte-identical).
+    #[test]
+    #[serial]
+    fn migrate_v1_preserves_name_source_created_at_duration() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), |home| {
+            write_full_profile(home, "peter", "gpt-sovits-v2-multi-aux-ref");
+            let _ = migrate_voice("peter", false).unwrap();
+            let v = load_voice("peter").unwrap();
+            let v2 = match v {
+                VoiceProfile::V2(v) => v,
+                VoiceProfile::V1(_) => panic!("expected V2"),
+            };
+            assert_eq!(v2.name, "peter");
+            assert_eq!(v2.source, "/tmp/x.wav");
+            assert_eq!(v2.created_at, "2026-05-04T00:00:00Z");
+            assert!((v2.duration_seconds - 60.0).abs() < 1e-9);
+        });
+    }
+
+    /// Test #3: ref_main.{wav,txt} GONE from top level; ref.{wav,txt} present.
+    #[test]
+    #[serial]
+    fn migrate_v1_renames_ref_main_to_ref() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), |home| {
+            write_full_profile(home, "peter", "gpt-sovits-v2-multi-aux-ref");
+            let _ = migrate_voice("peter", false).unwrap();
+            let dir = home.join("voices/peter");
+            assert!(
+                dir.join("ref.wav").is_file(),
+                "ref.wav missing at top level"
+            );
+            assert!(
+                dir.join("ref.txt").is_file(),
+                "ref.txt missing at top level"
+            );
+            assert!(
+                !dir.join("ref_main.wav").exists(),
+                "ref_main.wav should be gone from top level (moved to .v1.bak/)"
+            );
+            assert!(
+                !dir.join("ref_main.txt").exists(),
+                "ref_main.txt should be gone from top level (moved to .v1.bak/)"
+            );
+        });
+    }
+
+    /// Test #4 (rust-expert nit-4 sharpened): assert each expected
+    /// filename in .v1.bak/, not just the count.
+    #[test]
+    #[serial]
+    fn migrate_v1_moves_aux_to_v1_bak_child() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), |home| {
+            write_full_profile(home, "peter", "gpt-sovits-v2-multi-aux-ref");
+            let _ = migrate_voice("peter", false).unwrap();
+            let bak = home.join("voices/peter/.v1.bak");
+            assert!(bak.is_dir(), ".v1.bak/ should exist");
+            let mut expected: Vec<String> = vec![
+                "profile.toml".into(),
+                "ref_main.wav".into(),
+                "ref_main.txt".into(),
+            ];
+            for i in 1..=5 {
+                expected.push(format!("aux_{i}.wav"));
+                expected.push(format!("aux_{i}.txt"));
+            }
+            for name in &expected {
+                assert!(
+                    bak.join(name).is_file(),
+                    ".v1.bak/{name} should exist after migrate"
+                );
+            }
+            // Also assert exact file count (no extras).
+            let actual: Vec<String> = std::fs::read_dir(&bak)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect();
+            assert_eq!(
+                actual.len(),
+                expected.len(),
+                "expected {} files in .v1.bak/, got {} ({:?})",
+                expected.len(),
+                actual.len(),
+                actual
+            );
+        });
+    }
+
+    /// Test #5 (rust-expert B4 + impl-detail #9): idempotent on already-v2;
+    /// content-compare profile.toml, NOT mtime; AlreadyMigrated branch
+    /// must not touch disk.
+    #[test]
+    #[serial]
+    fn migrate_idempotent_on_already_v2() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), |home| {
+            write_v2_profile(home, "tyson", "fish-speech-s2-pro");
+            let path = home.join("voices/tyson/profile.toml");
+            let before = std::fs::read(&path).unwrap();
+            let report = migrate_voice("tyson", false).expect("migrate idempotent");
+            assert!(report.already_migrated());
+            assert_eq!(report.voice_name(), "tyson");
+            // Content-compare proves the no-op branch did NOT rewrite disk.
+            let after = std::fs::read(&path).unwrap();
+            assert_eq!(
+                before, after,
+                "AlreadyMigrated must not modify profile.toml"
+            );
+            // Without a .v1.bak/ on disk, the report's path is None.
+            match report {
+                MigrateReport::AlreadyMigrated { v1_bak_path, .. } => {
+                    assert!(v1_bak_path.is_none());
+                }
+                _ => panic!("expected AlreadyMigrated"),
+            }
+        });
+    }
+
+    /// Test #5b: AlreadyMigrated surfaces .v1.bak/ path when one exists
+    /// on disk (a prior migration's recovery dir).
+    #[test]
+    #[serial]
+    fn migrate_idempotent_on_already_v2_surfaces_v1_bak() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), |home| {
+            let dir = write_v2_profile(home, "tyson", "fish-speech-s2-pro");
+            std::fs::create_dir_all(dir.join(".v1.bak")).unwrap();
+            let report = migrate_voice("tyson", false).unwrap();
+            match report {
+                MigrateReport::AlreadyMigrated { v1_bak_path, .. } => {
+                    assert_eq!(v1_bak_path, Some(dir.join(".v1.bak")));
+                }
+                _ => panic!("expected AlreadyMigrated"),
+            }
+        });
+    }
+
+    /// Test #6: bails on leftover partial-migrate dir without --force.
+    #[test]
+    #[serial]
+    fn migrate_bails_on_partial_dir_without_force() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), |home| {
+            write_full_profile(home, "peter", "gpt-sovits-v2-multi-aux-ref");
+            std::fs::create_dir_all(home.join("voices/peter.partial-migrate")).unwrap();
+            let err = migrate_voice("peter", false).unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(msg.contains("partial-migrate"), "got: {msg}");
+            assert!(msg.contains("--force"), "got: {msg}");
+        });
+    }
+
+    /// Test #7: --force clobbers existing partial-migrate dir.
+    #[test]
+    #[serial]
+    fn migrate_force_clobbers_existing_partial_migrate_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), |home| {
+            write_full_profile(home, "peter", "gpt-sovits-v2-multi-aux-ref");
+            let leftover = home.join("voices/peter.partial-migrate");
+            std::fs::create_dir_all(&leftover).unwrap();
+            std::fs::write(leftover.join("sentinel"), b"junk").unwrap();
+            let report = migrate_voice("peter", true).expect("force should succeed");
+            assert!(!report.already_migrated());
+            // After migration, the partial-migrate dir is the new live dir
+            // — but we renamed it AND the leftover was nuked first, so the
+            // sentinel file from the old leftover is gone.
+            assert!(!home.join("voices/peter.partial-migrate").exists());
+            assert!(load_voice("peter").unwrap().schema_version() == 2);
+        });
+    }
+
+    /// Test #8 (rust-expert nit-5 sharpened): orphan-old-after-remove —
+    /// bails even with --force, AND disk state is unchanged on the
+    /// --force=true bail (no silent mutation).
+    #[test]
+    #[serial]
+    fn migrate_orphan_old_refuses_even_with_force() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), |home| {
+            // Stage only migrating-old/ — no live, no partial.
+            let stranded = home.join("voices/peter.migrating-old");
+            std::fs::create_dir_all(&stranded).unwrap();
+            std::fs::write(stranded.join("sentinel"), b"v1-ghost").unwrap();
+
+            let err = migrate_voice("peter", false).unwrap_err();
+            assert!(format!("{err:#}").contains("resurrect"), "got: {err:#}");
+            assert!(stranded.is_dir(), "force=false must not mutate disk");
+
+            let err = migrate_voice("peter", true).unwrap_err();
+            assert!(format!("{err:#}").contains("resurrect"), "got: {err:#}");
+            assert!(
+                stranded.join("sentinel").is_file(),
+                "force=true must not silently nuke migrating-old"
+            );
+        });
+    }
+
+    /// Test #9 (rust-expert nit-6 sharpened): self-heal mid-flip — both
+    /// leftovers gone post-test, peter/ is V2.
+    #[test]
+    #[serial]
+    fn migrate_self_heals_when_mid_flip_state_detected() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), |home| {
+            // Stage a v1 voice, then SIMULATE a 6a→6b crash: rename
+            // peter → peter.migrating-old, and leave a half-built
+            // peter.partial-migrate/ behind.
+            write_full_profile(home, "peter", "gpt-sovits-v2-multi-aux-ref");
+            std::fs::rename(
+                home.join("voices/peter"),
+                home.join("voices/peter.migrating-old"),
+            )
+            .unwrap();
+            // Half-built partial-migrate; the migrator should NUKE this
+            // and resurrect the v1 from migrating-old/.
+            let partial = home.join("voices/peter.partial-migrate");
+            std::fs::create_dir_all(&partial).unwrap();
+            std::fs::write(partial.join("garbage"), b"half-built").unwrap();
+
+            let report = migrate_voice("peter", false).expect("self-heal then migrate");
+            assert!(!report.already_migrated());
+            assert!(load_voice("peter").unwrap().schema_version() == 2);
+            assert!(!home.join("voices/peter.partial-migrate").exists());
+            assert!(!home.join("voices/peter.migrating-old").exists());
+        });
+    }
+
+    /// Test #10: bails loud on unknown voice.
+    #[test]
+    #[serial]
+    fn migrate_bails_on_unknown_voice() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), |_| {
+            let err = migrate_voice("nobody", false).unwrap_err();
+            assert!(format!("{err:#}").contains("not found"), "got: {err:#}");
+        });
+    }
+
+    /// Test #11: round-trip via load_voice.
+    #[test]
+    #[serial]
+    fn migrate_v2_profile_loadable_via_load_voice() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), |home| {
+            write_full_profile(home, "peter", "gpt-sovits-v2-multi-aux-ref");
+            let _ = migrate_voice("peter", false).unwrap();
+            let v = load_voice("peter").unwrap();
+            let v2 = match v {
+                VoiceProfile::V2(v) => v,
+                VoiceProfile::V1(_) => panic!("expected V2 after migrate"),
+            };
+            assert!(v2.ref_wav.is_file());
+            assert!(v2.ref_txt.is_file());
+        });
+    }
+
+    /// Test #12 (rust-expert R4): aux_count = 3 → 9 files in .v1.bak/
+    /// (1 profile + 2 ref + 6 aux).
+    #[test]
+    #[serial]
+    fn migrate_with_aux_count_3_copies_three_aux_pairs() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), |home| {
+            write_full_profile_with_aux_count(home, "peter", 3);
+            let _ = migrate_voice("peter", false).expect("migrate aux=3");
+            let bak = home.join("voices/peter/.v1.bak");
+            assert!(bak.is_dir());
+            for i in 1..=3 {
+                assert!(bak.join(format!("aux_{i}.wav")).is_file());
+                assert!(bak.join(format!("aux_{i}.txt")).is_file());
+            }
+            assert!(!bak.join("aux_4.wav").exists());
+            let actual_count = std::fs::read_dir(&bak).unwrap().count();
+            assert_eq!(
+                actual_count, 9,
+                "aux_count=3 should yield 9 files in .v1.bak/"
+            );
+        });
+    }
+
+    /// Test #13 (rust-expert R1 + nit-7 sharpened): compound-stranded —
+    /// without --force bails AND live v1 is byte-unchanged on the bail
+    /// path; with --force migrates cleanly.
+    #[test]
+    #[serial]
+    fn migrate_full_6a_6b_compound_stranded_with_force() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), |home| {
+            write_full_profile(home, "peter", "gpt-sovits-v2-multi-aux-ref");
+            std::fs::create_dir_all(home.join("voices/peter.partial-migrate")).unwrap();
+            std::fs::create_dir_all(home.join("voices/peter.migrating-old")).unwrap();
+
+            // Capture v1 profile bytes for unchanged-on-bail assertion.
+            let live_profile = home.join("voices/peter/profile.toml");
+            let before = std::fs::read(&live_profile).unwrap();
+
+            // --force=false bails; live v1 must be untouched.
+            let err = migrate_voice("peter", false).unwrap_err();
+            assert!(format!("{err:#}").contains("--force"), "got: {err:#}");
+            let after_bail = std::fs::read(&live_profile).unwrap();
+            assert_eq!(before, after_bail, "live v1 must be byte-unchanged on bail");
+
+            // --force=true: nukes both stragglers and migrates cleanly.
+            let _ = migrate_voice("peter", true).expect("--force should migrate");
+            assert!(!home.join("voices/peter.partial-migrate").exists());
+            assert!(!home.join("voices/peter.migrating-old").exists());
+            assert!(load_voice("peter").unwrap().schema_version() == 2);
+        });
+    }
+
+    /// Test #14 (rust-expert R3): verify-failure rollback. Inject a hook
+    /// that returns Err *after* the rename flip; assert the disk is
+    /// fully rolled back to v1.
+    #[test]
+    #[serial]
+    fn migrate_verify_failure_rolls_back_to_v1() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), |home| {
+            write_full_profile(home, "peter", "gpt-sovits-v2-multi-aux-ref");
+            let err = migrate_voice_test_hook("peter", false, &|| {
+                Err(anyhow!("synthetic verify failure"))
+            })
+            .unwrap_err();
+            assert!(
+                format!("{err:#}").contains("synthetic verify failure"),
+                "got: {err:#}"
+            );
+            // Disk must be fully restored to v1 state.
+            let v = load_voice("peter").unwrap();
+            assert_eq!(
+                v.schema_version(),
+                1,
+                "verify-failure rollback must restore schema=1"
+            );
+            // All 5 aux pairs back at top level.
+            let dir = home.join("voices/peter");
+            for i in 1..=5 {
+                assert!(
+                    dir.join(format!("aux_{i}.wav")).is_file(),
+                    "aux_{i}.wav must be restored to top level"
+                );
+            }
+            // ref_main.wav back at top level (not ref.wav).
+            assert!(dir.join("ref_main.wav").is_file());
+            assert!(!dir.join("ref.wav").exists());
+            // migrating-old/ must be gone (consumed by rollback rename).
+            assert!(!home.join("voices/peter.migrating-old").exists());
+            // partial-migrate/ remains as a leftover the --force path
+            // can clean (matches the verify-failure rollback contract).
+            assert!(home.join("voices/peter.partial-migrate").exists());
+        });
+    }
+
+    /// Test #14b (rust-expert nit-8 control arm): Ok(()) hook completes
+    /// migration normally. Without this, a "rollback always runs" bug
+    /// could silently pass test #14.
+    #[test]
+    #[serial]
+    fn migrate_with_ok_hook_completes_normally() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), |home| {
+            write_full_profile(home, "peter", "gpt-sovits-v2-multi-aux-ref");
+            let report =
+                migrate_voice_test_hook("peter", false, &|| Ok(())).expect("Ok hook should pass");
+            assert!(!report.already_migrated());
+            assert_eq!(load_voice("peter").unwrap().schema_version(), 2);
+            assert!(!home.join("voices/peter.migrating-old").exists());
+            assert!(!home.join("voices/peter.partial-migrate").exists());
+        });
+    }
+
+    /// Test #15 (rust-expert nit-2, R2 completion): preflight row 6 —
+    /// `peter/` absent, `partial-migrate/` present, `migrating-old/`
+    /// absent. Without --force bails; with --force nukes partial AND
+    /// then reports voice-not-found.
+    #[test]
+    #[serial]
+    fn migrate_only_partial_stage_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), |home| {
+            std::fs::create_dir_all(home.join("voices/peter.partial-migrate")).unwrap();
+
+            let err = migrate_voice("peter", false).unwrap_err();
+            assert!(format!("{err:#}").contains("--force"), "got: {err:#}");
+            assert!(home.join("voices/peter.partial-migrate").is_dir());
+
+            let err = migrate_voice("peter", true).unwrap_err();
+            assert!(format!("{err:#}").contains("not found"), "got: {err:#}");
+            assert!(!home.join("voices/peter.partial-migrate").exists());
         });
     }
 }
