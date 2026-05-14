@@ -375,15 +375,22 @@ ffmpeg6_prefix = "/f"
         });
     }
 
-    /// Both markers somehow present (mid-migration state): v2 wins.
-    /// The dispatcher prefers v2 when both are valid; doctor surfaces
-    /// the legacy v1.bak hint (see PR-AB step 6c).
+    /// V2 dispatch is unaffected by an orphan `INSTALLED.v1.bak` file
+    /// (left behind by a previous schema-1 install per PR-AB step 6c).
+    /// `is_installed()` and `is_installed_v2()` are mutually exclusive
+    /// at the marker level — both can never return true simultaneously
+    /// — so this test pins that the v1.bak orphan does NOT confuse the
+    /// dispatcher and that v2 takes the active path.
+    /// (Renamed from `run_dispatches_v2_when_both_markers_present` per
+    /// rust-expert PR #45 review R1: "both markers" was misleading
+    /// since markers are structurally exclusive.)
     #[test]
     #[serial]
-    fn run_dispatches_v2_when_both_markers_present() {
+    fn v2_dispatch_unaffected_by_orphan_v1_bak() {
         let tmp = tempfile::tempdir().unwrap();
         write_v2_marker_in(tmp.path());
-        // Stage a v1 backup file as well (not the active marker)
+        // Stage a v1 backup file (not the active marker — the active
+        // marker is the schema-2 INSTALLED.toml from write_v2_marker_in).
         std::fs::write(
             tmp.path().join("cloning/INSTALLED.v1.bak"),
             "schema_version = 1\ngpt_sovits_sha = \"old\"\n",
@@ -392,11 +399,9 @@ ffmpeg6_prefix = "/f"
         with_home(tmp.path(), || {
             let err = run("tyson".into(), "/nonexistent".into(), false).unwrap_err();
             let msg = format!("{err:#}");
-            // Same shape as run_dispatches_v2 — we only get this far
-            // if v2 took precedence. (v1 was checked second.)
             assert!(
                 msg.contains("resolving clone source") || msg.contains("nonexistent"),
-                "expected v2 dispatch with both markers, got: {msg}"
+                "expected v2 dispatch unaffected by v1.bak orphan, got: {msg}"
             );
         });
     }

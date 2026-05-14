@@ -1857,6 +1857,31 @@ recipe = "fish-speech-s2-pro"
         std::fs::write(dir.join("ref.txt"), "stub").unwrap();
     }
 
+    /// Drop guard for env-var-mutating async tests: restores
+    /// VOICEFORGE_HOME on drop regardless of panic. R2 fix from
+    /// rust-expert PR #45 review — without this, a panicking C-4
+    /// test would leak the env var into subsequent tests.
+    struct VoiceforgeHomeGuard {
+        previous: Option<String>,
+    }
+
+    impl VoiceforgeHomeGuard {
+        fn set(home: &Path) -> Self {
+            let previous = std::env::var("VOICEFORGE_HOME").ok();
+            std::env::set_var("VOICEFORGE_HOME", home);
+            Self { previous }
+        }
+    }
+
+    impl Drop for VoiceforgeHomeGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(v) => std::env::set_var("VOICEFORGE_HOME", v),
+                None => std::env::remove_var("VOICEFORGE_HOME"),
+            }
+        }
+    }
+
     /// FishEngine::speak on a V1 profile must bail loud with the
     /// migrate-command hint (R3 fix from rust-expert pass-1).
     #[tokio::test]
@@ -1881,16 +1906,10 @@ ffmpeg6_prefix = "/f"
         )
         .unwrap();
 
-        let prev_home = std::env::var("VOICEFORGE_HOME").ok();
-        std::env::set_var("VOICEFORGE_HOME", tmp.path());
+        let _guard = VoiceforgeHomeGuard::set(tmp.path());
 
         let engine = FishEngine::new().expect("v2 marker present, FishEngine::new() ok");
         let result = engine.speak("hello", "peter").await;
-
-        match prev_home {
-            Some(v) => std::env::set_var("VOICEFORGE_HOME", v),
-            None => std::env::remove_var("VOICEFORGE_HOME"),
-        }
 
         let err = result.expect_err("FishEngine on v1 profile must bail");
         let msg = format!("{err:#}");
@@ -1921,16 +1940,10 @@ ffmpeg6_prefix = "/f"
         )
         .unwrap();
 
-        let prev_home = std::env::var("VOICEFORGE_HOME").ok();
-        std::env::set_var("VOICEFORGE_HOME", tmp.path());
+        let _guard = VoiceforgeHomeGuard::set(tmp.path());
 
         let engine = CloningEngine::new().expect("v1 marker present, CloningEngine::new() ok");
         let result = engine.speak("hello", "tyson").await;
-
-        match prev_home {
-            Some(v) => std::env::set_var("VOICEFORGE_HOME", v),
-            None => std::env::remove_var("VOICEFORGE_HOME"),
-        }
 
         let err = result.expect_err("CloningEngine on v2 profile must bail");
         let msg = format!("{err:#}");

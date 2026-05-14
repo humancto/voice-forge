@@ -533,10 +533,17 @@ aux_count = 5
             assert_eq!(v.name(), "peter");
             assert_eq!(v.recipe(), "gpt-sovits-v2-multi-aux-ref");
             assert_eq!(v.schema_version(), 1);
-            // Drill into the V1 variant for V1-specific field assertions.
+            // REGRESSION NET (PR #45 review D1): an existing v1 user
+            // (schema-1 profile on disk, never ran `voiceforge voices
+            // migrate`) MUST get back VoiceProfile::V1. Silent misroute
+            // to V2 would land them in the FishEngine path, which bails
+            // loud per C-4 — but the right behavior is "stay on V1."
             let v1 = match v {
                 VoiceProfile::V1(v1) => v1,
-                VoiceProfile::V2(_) => panic!("expected V1 variant"),
+                VoiceProfile::V2(_) => panic!(
+                    "REGRESSION: load_voice returned V2 for a schema-1 profile on disk. \
+                     The v1-still-works contract (PR-C C-5) is broken."
+                ),
             };
             assert_eq!(v1.aux_count, 5);
             assert_eq!(v1.aux_wavs.len(), 5);

@@ -205,14 +205,20 @@ if [[ "$DRY_RUN" != "1" ]]; then
   CLONING_VENV_PYTHON="$VOICEFORGE_HOME/cloning/venv/bin/python"
   [[ -x "$CLONING_VENV_PYTHON" ]] || die "cloning venv python missing: $CLONING_VENV_PYTHON"
 
-  "$CLONING_VENV_PYTHON" - <<PYEOF
+  # B1 fix (rust-expert PR #45 review): pass the partial dir via env
+  # + quoted heredoc so a hostile $VOICEFORGE_HOME containing a quote,
+  # a backslash, or a newline cannot escape into the Python source.
+  # Previously the unquoted PYEOF interpolated $PARTIAL_DIR directly
+  # into the Path("...") literal — known sharp edge.
+  PARTIAL_DIR_ENV="$PARTIAL_DIR" "$CLONING_VENV_PYTHON" - <<'PYEOF'
+import os
 import whisper
 from pathlib import Path
+
+partial = Path(os.environ["PARTIAL_DIR_ENV"])
 m = whisper.load_model("base")
-wav = Path("$PARTIAL_DIR") / "ref.wav"
-txt = Path("$PARTIAL_DIR") / "ref.txt"
-r = m.transcribe(str(wav), language="en", fp16=False)
-txt.write_text(r["text"].strip())
+r = m.transcribe(str(partial / "ref.wav"), language="en", fp16=False)
+(partial / "ref.txt").write_text(r["text"].strip())
 print(f"  ref: {r['text'].strip()[:80]}")
 PYEOF
 fi
