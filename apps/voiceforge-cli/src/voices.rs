@@ -464,16 +464,15 @@ pub enum MigrateReport {
     },
 }
 
-// `#[allow(dead_code)]`: the accessors are used in `#[cfg(test)]` and
-// will be used by `main.rs`'s dispatch arm in commit B-2.
-#[allow(dead_code)]
 impl MigrateReport {
+    #[allow(dead_code)]
     pub fn voice_name(&self) -> &str {
         match self {
             Self::AlreadyMigrated { voice_name, .. } => voice_name,
             Self::Migrated { voice_name, .. } => voice_name,
         }
     }
+    #[allow(dead_code)]
     pub fn already_migrated(&self) -> bool {
         matches!(self, Self::AlreadyMigrated { .. })
     }
@@ -546,9 +545,6 @@ impl Drop for StagingGuard<'_> {
 /// above for the disk-shape contract + crash-recovery rules. Idempotent
 /// on already-v2. `force` clobbers leftover staging dirs from a prior
 /// interrupted run.
-// `#[allow(dead_code)]` strips in commit B-2 when `main.rs::VoicesAction::Migrate`
-// arm is wired up.
-#[allow(dead_code)]
 pub fn migrate_voice(name: &str, force: bool) -> Result<MigrateReport> {
     migrate_voice_inner(name, force, &|| Ok(()))
 }
