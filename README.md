@@ -34,7 +34,7 @@
   <a href="https://github.com/humancto/voice-forge/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/humancto/voice-forge?color=blue"></a>
   <a href="https://github.com/humancto/voice-forge/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/humancto/voice-forge?style=flat&logo=github"></a>
   <img alt="Built with Rust" src="https://img.shields.io/badge/built%20with-Rust-orange?logo=rust&logoColor=white">
-  <img alt="Cloning backend" src="https://img.shields.io/badge/cloning-GPT--SoVITS%20v2-3776AB?logo=python&logoColor=white">
+  <img alt="Cloning backend" src="https://img.shields.io/badge/cloning-fish--speech%20S2%20Pro-3776AB?logo=python&logoColor=white">
   <img alt="Platforms" src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux-lightgrey">
 </p>
 
@@ -49,7 +49,44 @@ voiceforge run -- npm test
   # 🔊  "Holy crap Lois, the build is on fire!"
 ```
 
-Bring **any clean ≥60-second audio file** of the voice you want (or a YouTube URL — yt-dlp resolves it) — a Family Guy clip, a podcast segment, a recording of yourself. VoiceForge runs the proven multi-aux-ref recipe (1 main + 5 aux × 10 s, Whisper-transcribed) through **GPT-SoVITS v2** locally and the next time your build dies, that voice says so. **Or skip the cloning entirely** — `voiceforge pack install <name>` ships 5 pre-rendered celebrity voice packs (Peter Griffin, Trump, Musk, Kimmel, Neil deGrasse Tyson) that play in ~50 ms with no model load.
+Bring **any clean ≥60-second audio file** of the voice you want (or a YouTube URL — yt-dlp resolves it) — a Family Guy clip, a podcast segment, a recording of yourself. VoiceForge runs the studio-quality **fish-speech S2 Pro** cloning pipeline locally and the next time your build dies, that voice says so. **Or skip the cloning entirely** — `voiceforge pack install <name>` ships 5 pre-rendered celebrity voice packs (Peter Griffin, Trump, Musk, Kimmel, Neil deGrasse Tyson) that play in ~50 ms with no model load.
+
+## New in v0.4 — studio-quality clones + the audiobook killer demo
+
+Two big rocks shipped on `main` ahead of the v0.4 tag:
+
+**1. `voiceforge note` — full audiobook narration in any cloned voice.**
+
+```bash
+voiceforge note --voice tyson --in chapter.md --out chapter.wav
+```
+
+Point it at a `.md` or `.txt` (or pipe via stdin), give it a v2 voice, walk away. VoiceForge chunks the input (paragraph-aware, sentence-boundary-respecting via `pulldown-cmark`), synthesizes each chunk through the long-lived fish-speech S2 Pro process, and concats the chunks with `ffmpeg -c copy` into a finished WAV. **Ctrl-C is safe**: re-running with the same args picks up where it left off via a per-output `<out>.progress.json` resume cache. Per-chunk WAVs are written through `tmp + fsync + rename` with parent-dir syncs so a power-loss between chunks loses at most one chunk of work.
+
+```bash
+# Resume after Ctrl-C — just re-run:
+voiceforge note --voice tyson --in chapter.md --out chapter.wav
+
+# Force re-synth every chunk:
+voiceforge note --voice tyson --in chapter.md --out chapter.wav --force
+
+# Cleanup chunk dir + progress.json on success:
+voiceforge note --voice tyson --in chapter.md --out chapter.wav --cleanup
+```
+
+`voiceforge note` is v2-only. v1 voices get a clear bail with a migrate hint — which is what the second new command is for.
+
+**2. `voiceforge voices migrate <name>` — v1 → v2 in place, no re-cloning.**
+
+```bash
+voiceforge voices migrate peter
+# migrated voice "peter": gpt-sovits-v2-multi-aux-ref -> fish-speech-s2-pro.
+# Original aux files preserved at ~/.voiceforge/voices/peter/.v1.bak/
+```
+
+Existing v0.3 users with a `peter` voice cloned via GPT-SoVITS v2 can run this command once and `voiceforge say --voice peter` (and `voiceforge note --voice peter`) now route through fish-speech S2 Pro. The migration is atomic (verify-before-cleanup with rollback on failure), idempotent on already-v2 voices, and leaves a recoverable `.v1.bak/` child dir so the original aux files can be retrieved.
+
+**Why fish-speech S2 Pro?** A/B'd against GPT-SoVITS v2 on the same Peter Griffin reference clip — fish-speech S2 Pro produces output that's recognizably the character where GPT-SoVITS v2 hits a ceiling. The whole pack-rendering pipeline (`docs/PACK_RENDERING.md`) already runs on fish-speech S2 Pro; v0.4 brings that quality to live cloning.
 
 ## What you can do with voiceforge today
 
@@ -327,7 +364,7 @@ That alone gets you `voiceforge run -- <cmd>` reactions in the OS default voice 
 voiceforge install-cloning
 ```
 
-This installs Python 3.11 (arm64), `ffmpeg@6`, the GPT-SoVITS v2 weights, and a venv at `~/.voiceforge/cloning/`. Idempotent — re-runs are seconds. `voiceforge install-cloning --check` verifies the install. `--force` rebuilds, `--uninstall` removes it.
+This installs Python 3.11 (arm64), `ffmpeg@6`, the fish-speech S2 Pro weights (v0.4 default; legacy GPT-SoVITS v2 markers still supported), and a venv at `~/.voiceforge/cloning/`. Idempotent — re-runs are seconds. `voiceforge install-cloning --check` verifies the install. `--force` rebuilds, `--uninstall` removes it. Post-install smoke synth runs automatically to catch bad checkpoints before they make it to your first real clone.
 
 **Step 3 — clone a voice from any local audio file** (≥60 s of clean single-speaker audio):
 
@@ -447,29 +484,36 @@ The v0.2.0 release shipped the binary distribution + the daemon. Since then, a s
 | #21 | Unix-socket NDJSON daemon at `~/.voiceforge/voiceforge.sock`.                                                                                                                                               | 1.8     |
 | #30 | `voiceforge install git-hooks` — per-repo git hooks installer (post-commit, post-merge, post-rewrite, pre-push). Honors `core.hooksPath`; chases worktree `.git`-file via `git rev-parse --git-common-dir`. | 3.2     |
 | #31 | Ingest now applies EBU R128 loudnorm (I=-16 LUFS) + rejects silent input. Quiet recordings no longer produce quiet clones.                                                                                  | 2.2.1   |
+| #41 | **v0.4 PR-AB** — install rev2 + fish-speech S2 Pro live runtime. `voiceforge install-cloning` now defaults to the v2 engine that powers `voiceforge note`.                                                  | v0.4    |
+| #42 | **v0.4 PR-AB step 6d** — post-install smoke synth. `install-cloning` now performs a real test synth before marking the install complete; surfaces failures early via `voiceforge doctor`.                   | v0.4    |
+| #45 | **v0.4 PR-C-a** — voice profile schema v2. Adds `VoiceProfile::V2` enum + `voiceforge clone` routes through the new fish-speech path. Schema-1 (gpt-sovits) voices keep working unchanged.                  | v0.4    |
+| #46 | **v0.4 PR-C-b** — `voiceforge voices migrate <name>`. Atomic v1→v2 in-place migration with `.v1.bak/` recovery surface, idempotent on already-v2, fault-injection-tested rollback on verify failure.        | v0.4    |
+| #47 | **v0.4 PR-D** — `voiceforge note --voice <name> --in <file> --out <file>`. Long-form narration with resume cache, pulldown-cmark markdown stripping, per-chunk format verify, pinned-ffmpeg concat.         | v0.4    |
 
-Total: **220 tests green**, clippy + fmt clean. The next tagged release will roll all of these.
+Total: **525 tests green** (post v0.4), clippy + fmt clean. The next tagged release will roll all of these.
 
 ## What's shipped
 
 CLI subcommands (run any with `--help`):
 
-|                                               |                                                                                                               |
-| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `voiceforge install-cloning`                  | One-shot install of Python 3.11 + ffmpeg@6 + GPT-SoVITS v2 (`--check`, `--force`, `--uninstall`; macOS arm64) |
-| `voiceforge clone <name> <source>`            | Clone a voice from a local audio file ≥ 60 s                                                                  |
-| `voiceforge say --voice <name> --text "..."`  | One-shot synthesis through embedded / server / cloning engines (auto-routed)                                  |
-| `voiceforge run -- <cmd>`                     | Run a command, react on success/failure with a random line from `events.json`                                 |
-| `voiceforge ingest <input> <output>`          | Transcode any audio source to canonical 22050 Hz mono 16-bit PCM                                              |
-| `voiceforge doctor`                           | 10-check system health (incl. daemon socket probe), JSON via `--json`                                         |
-| `voiceforge voices`                           | List built-in presets + cloned voices, `voices remove <name>` deletes                                         |
-| `voiceforge use <name>`                       | Set active default voice in `~/.voiceforge/config.toml`                                                       |
-| `voiceforge daemon`                           | Unix-socket NDJSON server at `~/.voiceforge/voiceforge.sock` (ROADMAP 1.8)                                    |
-| `voiceforge send <event> [--text ...]`        | One-shot daemon client; exits 0/1/2/4 on outcome (ROADMAP 1.9)                                                |
-| `voiceforge hook [--profile claude-code]`     | Pipe NDJSON events from AI agents into the daemon (ROADMAP 3.3)                                               |
-| `voiceforge shell-init <zsh\|bash> --install` | Idempotent shell hook install for command-success/fail events (ROADMAP 3.1)                                   |
-| `voiceforge play --pack <name> --event <id>`  | Sub-100ms playback of pre-rendered pack WAVs (ROADMAP 6.5)                                                    |
-| `voiceforge pack {list,install,remove,info}`  | Manage installed voice packs from the static index (ROADMAP 6.2)                                              |
+|                                                  |                                                                                                               |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| `voiceforge install-cloning`                     | One-shot install of Python 3.11 + ffmpeg@6 + GPT-SoVITS v2 (`--check`, `--force`, `--uninstall`; macOS arm64) |
+| `voiceforge clone <name> <source>`               | Clone a voice from a local audio file ≥ 60 s                                                                  |
+| `voiceforge say --voice <name> --text "..."`     | One-shot synthesis through embedded / server / cloning engines (auto-routed)                                  |
+| `voiceforge run -- <cmd>`                        | Run a command, react on success/failure with a random line from `events.json`                                 |
+| `voiceforge ingest <input> <output>`             | Transcode any audio source to canonical 22050 Hz mono 16-bit PCM                                              |
+| `voiceforge doctor`                              | 10-check system health (incl. daemon socket probe), JSON via `--json`                                         |
+| `voiceforge voices`                              | List built-in presets + cloned voices, `voices remove <name>` deletes                                         |
+| `voiceforge voices migrate <name>`               | Atomic v1→v2 migration of a GPT-SoVITS voice to fish-speech S2 Pro in place (v0.4)                            |
+| `voiceforge note --voice <n> --in <f> --out <f>` | Render long-form text (markdown or plain) to a narration WAV with resume cache (v0.4)                         |
+| `voiceforge use <name>`                          | Set active default voice in `~/.voiceforge/config.toml`                                                       |
+| `voiceforge daemon`                              | Unix-socket NDJSON server at `~/.voiceforge/voiceforge.sock` (ROADMAP 1.8)                                    |
+| `voiceforge send <event> [--text ...]`           | One-shot daemon client; exits 0/1/2/4 on outcome (ROADMAP 1.9)                                                |
+| `voiceforge hook [--profile claude-code]`        | Pipe NDJSON events from AI agents into the daemon (ROADMAP 3.3)                                               |
+| `voiceforge shell-init <zsh\|bash> --install`    | Idempotent shell hook install for command-success/fail events (ROADMAP 3.1)                                   |
+| `voiceforge play --pack <name> --event <id>`     | Sub-100ms playback of pre-rendered pack WAVs (ROADMAP 6.5)                                                    |
+| `voiceforge pack {list,install,remove,info}`     | Manage installed voice packs from the static index (ROADMAP 6.2)                                              |
 
 Other shipped infrastructure:
 
