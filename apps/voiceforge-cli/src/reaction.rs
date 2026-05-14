@@ -638,7 +638,7 @@ where
         voices.extend(installed_packs);
     }
     if let Ok(cloned) = crate::voices::list_cloned_voices() {
-        voices.extend(cloned.into_iter().map(|v| v.name));
+        voices.extend(cloned.into_iter().map(|v| v.name().to_string()));
     }
     voices.sort();
     voices.dedup();

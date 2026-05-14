@@ -1212,8 +1212,8 @@ fn list_voices_cmd() -> Result<()> {
         writeln!(out)?;
         writeln!(out, "CLONED")?;
         for v in &cloned {
-            let marker = if v.name == active { "*" } else { " " };
-            writeln!(out, " {marker} {:<24}  source: {}", v.name, v.source)?;
+            let marker = if v.name() == active { "*" } else { " " };
+            writeln!(out, " {marker} {:<24}  source: {}", v.name(), v.source())?;
         }
     }
 

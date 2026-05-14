@@ -642,7 +642,22 @@ impl CloningEngine {
     pub async fn speak(&self, text: &str, voice: &str) -> Result<PathBuf> {
         let profile =
             voices::load_voice(voice).with_context(|| format!("loading cloned voice {voice}"))?;
-        let out = self.cache_path_for(text, voice, &profile.created_at);
+        // PR-C C-4: CloningEngine is the V1 (GPT-SoVITS) runtime. A V2
+        // profile must NOT be silently misrouted here — fish-speech's
+        // single-ref layout has no aux files and the v1 cloning_synth.py
+        // would bail with "voice not found at .../ref_main.wav". Bail
+        // loud + point at the right path.
+        let _v1 = match &profile {
+            voices::VoiceProfile::V1(v1) => v1,
+            voices::VoiceProfile::V2(_) => bail!(
+                "voice {voice:?} is a v2 (fish-speech) profile but the legacy GPT-SoVITS \
+                 engine is selected. To use this voice: ensure `voiceforge install-cloning` \
+                 has set up the v2 runtime (schema-2 marker present), or set \
+                 VOICEFORGE_TTS_ENGINE=fish-speech-s2-pro to route through FishEngine. \
+                 Downgrading a v2 profile to v1 is not supported."
+            ),
+        };
+        let out = self.cache_path_for(text, voice, profile.created_at());
 
         if out.exists() {
             return Ok(out);
@@ -850,7 +865,21 @@ impl FishEngine {
     pub async fn speak(&self, text: &str, voice: &str) -> Result<PathBuf> {
         let profile =
             voices::load_voice(voice).with_context(|| format!("loading cloned voice {voice}"))?;
-        let out = self.cache_path_for(text, voice, &profile.created_at);
+        // PR-C C-4: FishEngine is the V2 (fish-speech) runtime. A V1
+        // profile must NOT silently misroute here — fish_speech_synth.py
+        // would bail with "voice {voice}/ref.wav not found" on the
+        // multi-aux-ref layout. Bail loud + point at the migrate path.
+        let _v2 = match &profile {
+            voices::VoiceProfile::V2(v2) => v2,
+            voices::VoiceProfile::V1(_) => bail!(
+                "voice {voice:?} is a v1 (GPT-SoVITS) profile but the fish-speech engine \
+                 is selected. Either run `voiceforge voices migrate {voice}` (lands in \
+                 PR-C-b) to convert it to v2, or set \
+                 VOICEFORGE_TTS_ENGINE=gpt-sovits-v2 to keep using the legacy CloningEngine \
+                 (requires a schema-1 install on disk)."
+            ),
+        };
+        let out = self.cache_path_for(text, voice, profile.created_at());
 
         if out.exists() {
             return Ok(out);
@@ -1763,6 +1792,164 @@ ref_main_text = "stub"
             msg.contains("VOICEFORGE_TTS_ENGINE") && msg.contains("opts out"),
             "S1 bail must name the env var + the 'opts out' phrasing so the user
              knows how to fix it. Got: {msg}"
+        );
+    }
+
+    // ========================================================================
+    // PR-C C-4 cross-schema bail tests
+    //
+    // FishEngine + CloningEngine each enforce their own schema variant.
+    // A V2 profile through CloningEngine bails with engine-override hint;
+    // a V1 profile through FishEngine bails with migrate-command hint.
+    // Tests use voices::load_voice's schema dispatch — we don't actually
+    // spawn the python child (that needs a real install).
+    // ========================================================================
+
+    fn write_v1_voice(home: &Path, name: &str) {
+        let dir = home.join("voices").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("profile.toml"),
+            format!(
+                r#"
+schema_version = 1
+name = "{name}"
+source = "stub"
+created_at = "2026-05-12T00:00:00Z"
+duration_seconds = 60.0
+recipe = "gpt-sovits-v2-multi-aux-ref"
+aux_count = 5
+"#
+            ),
+        )
+        .unwrap();
+        // Stage all the files load_voice_v1 asserts on
+        std::fs::write(dir.join("ref_main.wav"), b"RIFF\x00\x00\x00\x00WAVEdata").unwrap();
+        std::fs::write(dir.join("ref_main.txt"), "stub").unwrap();
+        for i in 1..=5 {
+            std::fs::write(
+                dir.join(format!("aux_{i}.wav")),
+                b"RIFF\x00\x00\x00\x00WAVEdata",
+            )
+            .unwrap();
+            std::fs::write(dir.join(format!("aux_{i}.txt")), "stub").unwrap();
+        }
+    }
+
+    fn write_v2_voice(home: &Path, name: &str) {
+        let dir = home.join("voices").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("profile.toml"),
+            format!(
+                r#"
+schema_version = 2
+name = "{name}"
+source = "stub"
+created_at = "2026-05-12T00:00:00Z"
+duration_seconds = 12.5
+recipe = "fish-speech-s2-pro"
+"#
+            ),
+        )
+        .unwrap();
+        std::fs::write(dir.join("ref.wav"), b"RIFF\x00\x00\x00\x00WAVEdata").unwrap();
+        std::fs::write(dir.join("ref.txt"), "stub").unwrap();
+    }
+
+    /// Drop guard for env-var-mutating async tests: restores
+    /// VOICEFORGE_HOME on drop regardless of panic. R2 fix from
+    /// rust-expert PR #45 review — without this, a panicking C-4
+    /// test would leak the env var into subsequent tests.
+    struct VoiceforgeHomeGuard {
+        previous: Option<String>,
+    }
+
+    impl VoiceforgeHomeGuard {
+        fn set(home: &Path) -> Self {
+            let previous = std::env::var("VOICEFORGE_HOME").ok();
+            std::env::set_var("VOICEFORGE_HOME", home);
+            Self { previous }
+        }
+    }
+
+    impl Drop for VoiceforgeHomeGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(v) => std::env::set_var("VOICEFORGE_HOME", v),
+                None => std::env::remove_var("VOICEFORGE_HOME"),
+            }
+        }
+    }
+
+    /// FishEngine::speak on a V1 profile must bail loud with the
+    /// migrate-command hint (R3 fix from rust-expert pass-1).
+    #[tokio::test]
+    #[serial]
+    async fn fish_engine_speak_bails_on_v1_profile_with_migrate_hint() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_v1_voice(tmp.path(), "peter");
+        // Stage a v2 marker so FishEngine::new() succeeds (it reads the
+        // schema-2 INSTALLED.toml — which is unrelated to the voice
+        // profile's schema).
+        let cloning = tmp.path().join("cloning");
+        std::fs::create_dir_all(&cloning).unwrap();
+        std::fs::write(
+            cloning.join("INSTALLED.toml"),
+            r#"
+schema_version = 2
+version = "0.4.0"
+fish_speech_sha = "3dd1f85c402ee6f0a17c2971d3b0dd8d881ca139"
+python_path = "/p"
+ffmpeg6_prefix = "/f"
+"#,
+        )
+        .unwrap();
+
+        let _guard = VoiceforgeHomeGuard::set(tmp.path());
+
+        let engine = FishEngine::new().expect("v2 marker present, FishEngine::new() ok");
+        let result = engine.speak("hello", "peter").await;
+
+        let err = result.expect_err("FishEngine on v1 profile must bail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("v1 (GPT-SoVITS)") && msg.contains("voices migrate"),
+            "C-4 bail must name the legacy engine + migrate command. Got: {msg}"
+        );
+    }
+
+    /// CloningEngine::speak on a V2 profile must bail loud with the
+    /// engine-override hint (R3 fix from rust-expert pass-1).
+    #[tokio::test]
+    #[serial]
+    async fn cloning_engine_speak_bails_on_v2_profile_with_engine_hint() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_v2_voice(tmp.path(), "tyson");
+        // Stage a v1 marker so CloningEngine::new() succeeds.
+        let cloning = tmp.path().join("cloning");
+        std::fs::create_dir_all(&cloning).unwrap();
+        std::fs::write(
+            cloning.join("INSTALLED.toml"),
+            r#"
+schema_version = 1
+gpt_sovits_sha = "08d627c3"
+python_path = "/p"
+ffmpeg6_prefix = "/f"
+"#,
+        )
+        .unwrap();
+
+        let _guard = VoiceforgeHomeGuard::set(tmp.path());
+
+        let engine = CloningEngine::new().expect("v1 marker present, CloningEngine::new() ok");
+        let result = engine.speak("hello", "tyson").await;
+
+        let err = result.expect_err("CloningEngine on v2 profile must bail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("v2 (fish-speech)") && msg.contains("VOICEFORGE_TTS_ENGINE"),
+            "C-4 bail must name the v2 engine + env override. Got: {msg}"
         );
     }
 }
