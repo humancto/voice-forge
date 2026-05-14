@@ -34,8 +34,6 @@ pub const VOICE_SCHEMA_VERSION: u32 = 1;
 pub const KNOWN_RECIPES_V1: &[&str] = &["gpt-sovits-v2-multi-aux-ref"];
 
 /// Recipes valid under schema_version=2 (fish-speech path, v0.4 default).
-/// Consumed by `load_voice` once the V2 branch lights up in PR-C C-1b.
-#[allow(dead_code)]
 pub const KNOWN_RECIPES_V2: &[&str] = &["fish-speech-s2-pro"];
 
 /// Backward-compatibility alias. PR-C-a callers (tests + future
@@ -80,12 +78,9 @@ pub struct VoiceProfileV1 {
 }
 
 /// Schema-2 voice profile (fish-speech S2 Pro). Single 8-30s reference
-/// clip + transcript; no aux files. Lit up in C-1b — this struct is
-/// defined now so `enum VoiceProfile` stays exhaustive across the
-/// C-1a/C-1b split, but `load_voice` rejects schema=2 in C-1a until
-/// C-1b's branch lands.
+/// clip + transcript; no aux files. Lit up in C-1b — load_voice
+/// dispatches to `load_voice_v2` for schema_version=2 profiles.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
-#[allow(dead_code)] // wired in C-1b
 pub struct VoiceProfileV2 {
     pub schema_version: u32, // == 2
     pub name: String,
@@ -108,9 +103,6 @@ pub struct VoiceProfileV2 {
 #[derive(Debug, Clone, PartialEq)]
 pub enum VoiceProfile {
     V1(VoiceProfileV1),
-    /// Lit up in C-1b. Until then, `load_voice` returns
-    /// `unknown schema_version` for schema=2 markers.
-    #[allow(dead_code)]
     V2(VoiceProfileV2),
 }
 
@@ -257,15 +249,42 @@ pub fn load_voice(name: &str) -> Result<VoiceProfile> {
 
     match schema {
         1 => load_voice_v1(name, &raw, &profile_path, canonical),
-        2 => bail!(
-            "voice {name:?} profile.toml schema_version=2 (fish-speech) — \
-             V2 load path lit up in PR-C C-1b; not yet wired in this build."
-        ),
+        2 => load_voice_v2(name, &raw, &profile_path, canonical),
         other => bail!(
             "voice {name:?} profile.toml schema_version={other} unsupported \
              (this build knows: 1, 2). Re-clone or check for typo."
         ),
     }
+}
+
+fn load_voice_v2(
+    name: &str,
+    raw: &str,
+    profile_path: &Path,
+    canonical: PathBuf,
+) -> Result<VoiceProfile> {
+    let mut profile: VoiceProfileV2 =
+        toml::from_str(raw).with_context(|| format!("parsing {}", profile_path.display()))?;
+
+    if !KNOWN_RECIPES_V2.contains(&profile.recipe.as_str()) {
+        bail!(
+            "voice {name:?} schema=2 but recipe {:?} not in KNOWN_RECIPES_V2 ({:?})",
+            profile.recipe,
+            KNOWN_RECIPES_V2
+        );
+    }
+
+    profile.dir = canonical.clone();
+    profile.ref_wav = canonical.join("ref.wav");
+    profile.ref_txt = canonical.join("ref.txt");
+
+    // V2 layout: single ref.wav + ref.txt. NO aux files. Future PR-C-b
+    // migration leaves an `.v1.bak/` child dir with the legacy aux
+    // files; load_voice tolerates that (we never walk subdirectories).
+    assert_path_exists(&profile.ref_wav, "ref.wav")?;
+    assert_path_exists(&profile.ref_txt, "ref.txt")?;
+
+    Ok(VoiceProfile::V2(profile))
 }
 
 fn load_voice_v1(
@@ -585,36 +604,146 @@ aux_count = 5
         });
     }
 
-    /// PR-C C-1a: schema_version=2 profiles are recognized at the
-    /// peek+dispatch layer but NOT yet loadable in this commit (V2
-    /// branch lit up in C-1b). Until C-1b, schema=2 must bail with a
-    /// clear "lit up in C-1b" message rather than silently misroute
-    /// to the V1 loader.
-    #[test]
-    #[serial]
-    fn load_voice_rejects_schema_v2_until_c_1b() {
-        let tmp = tempfile::tempdir().unwrap();
-        with_home(tmp.path(), |home| {
-            let dir = home.join("voices/peter");
-            std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(
-                dir.join("profile.toml"),
+    // ========================================================================
+    // PR-C C-1b: V2 surface lit up
+    // ========================================================================
+
+    /// Stage a minimal V2 voice on disk + return its dir for further
+    /// fixture setup. Used by the C-1b test cluster below.
+    fn write_v2_profile(home: &Path, name: &str, recipe: &str) -> PathBuf {
+        let dir = home.join("voices").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("profile.toml"),
+            format!(
                 r#"
 schema_version = 2
-name = "peter"
+name = "{name}"
 source = "stub"
 created_at = "2026-05-12T00:00:00Z"
 duration_seconds = 12.5
-recipe = "fish-speech-s2-pro"
-"#,
-            )
-            .unwrap();
+recipe = "{recipe}"
+"#
+            ),
+        )
+        .unwrap();
+        // Real-ish RIFF/WAVE 12-byte header so file existence + basic
+        // shape passes; not a playable WAV but enough for unit tests.
+        std::fs::write(dir.join("ref.wav"), b"RIFF\x00\x00\x00\x00WAVEdata").unwrap();
+        std::fs::write(
+            dir.join("ref.txt"),
+            "this is a smoke test reference transcript",
+        )
+        .unwrap();
+        dir
+    }
+
+    #[test]
+    #[serial]
+    fn load_voice_v2_parses_fish_speech_profile() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), |home| {
+            write_v2_profile(home, "tyson", "fish-speech-s2-pro");
+            let v = load_voice("tyson").unwrap();
+            assert_eq!(v.name(), "tyson");
+            assert_eq!(v.recipe(), "fish-speech-s2-pro");
+            assert_eq!(v.schema_version(), 2);
+            let v2 = match v {
+                VoiceProfile::V2(v2) => v2,
+                VoiceProfile::V1(_) => panic!("expected V2 variant"),
+            };
+            assert!(v2.ref_wav.is_file());
+            assert!(v2.ref_txt.is_file());
+            assert_eq!(v2.duration_seconds, 12.5);
+        });
+    }
+
+    /// Cross-schema-rejection: a schema=1 profile that claims a V2
+    /// recipe fails at the KNOWN_RECIPES_V1 check.
+    #[test]
+    #[serial]
+    fn load_voice_v1_with_v2_recipe_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), |home| {
+            // write_full_profile is the V1 helper; pass the V2 recipe.
+            write_full_profile(home, "peter", "fish-speech-s2-pro");
             let err = load_voice("peter").unwrap_err();
             let msg = format!("{err:#}");
             assert!(
-                msg.contains("schema_version=2") || msg.contains("fish-speech"),
-                "expected v2-not-yet-wired error, got: {msg}"
+                msg.contains("schema=1") && msg.contains("KNOWN_RECIPES_V1"),
+                "expected schema=1 + KNOWN_RECIPES_V1 mismatch error, got: {msg}"
             );
+        });
+    }
+
+    /// Inverse: schema=2 + V1 recipe also fails at the new
+    /// KNOWN_RECIPES_V2 check.
+    #[test]
+    #[serial]
+    fn load_voice_v2_with_v1_recipe_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), |home| {
+            write_v2_profile(home, "tyson", "gpt-sovits-v2-multi-aux-ref");
+            let err = load_voice("tyson").unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("schema=2") && msg.contains("KNOWN_RECIPES_V2"),
+                "expected schema=2 + KNOWN_RECIPES_V2 mismatch error, got: {msg}"
+            );
+        });
+    }
+
+    /// V2 layout has NO aux files. Staging an `aux_1.wav` next to a V2
+    /// profile must NOT cause load_voice to try to read it or fail.
+    /// (Plan v2 B3 explicit-negative test.)
+    #[test]
+    #[serial]
+    fn load_voice_v2_does_not_assert_aux_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), |home| {
+            let dir = write_v2_profile(home, "tyson", "fish-speech-s2-pro");
+            // Stage stray aux files that V1 would have asserted on.
+            // V2's loader must ignore them entirely.
+            std::fs::write(dir.join("aux_1.wav"), b"junk").unwrap();
+            std::fs::write(dir.join("aux_2.wav"), b"junk").unwrap();
+            let v = load_voice("tyson").unwrap();
+            assert_eq!(v.schema_version(), 2);
+        });
+    }
+
+    /// PR-C-b will leave behind `<voice>/.v1.bak/` after a migration.
+    /// Today's load_voice must tolerate that child dir. (Plan v2 R5
+    /// regression net.)
+    #[test]
+    #[serial]
+    fn load_voice_v2_tolerates_dot_v1_bak_child_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), |home| {
+            let dir = write_v2_profile(home, "tyson", "fish-speech-s2-pro");
+            // Simulate a migration leftover from PR-C-b.
+            let bak = dir.join(".v1.bak");
+            std::fs::create_dir_all(&bak).unwrap();
+            std::fs::write(bak.join("ref_main.wav"), b"old aux").unwrap();
+            std::fs::write(bak.join("aux_1.wav"), b"old aux").unwrap();
+            // Must still load cleanly — load_voice never walks subdirs.
+            let v = load_voice("tyson").unwrap();
+            assert_eq!(v.schema_version(), 2);
+        });
+    }
+
+    /// Decision #7 lock: voice_exists() stays schema-agnostic. Both
+    /// v1 and v2 profiles must register as `exists`. (Plan v2 M3
+    /// regression net.)
+    #[test]
+    #[serial]
+    fn voice_exists_remains_schema_agnostic() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), |home| {
+            write_full_profile(home, "peter", "gpt-sovits-v2-multi-aux-ref");
+            write_v2_profile(home, "tyson", "fish-speech-s2-pro");
+            assert!(voice_exists("peter"), "v1 profile must register");
+            assert!(voice_exists("tyson"), "v2 profile must register");
+            assert!(!voice_exists("nobody"), "absent voice must not register");
         });
     }
 
