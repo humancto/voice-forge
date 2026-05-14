@@ -24,6 +24,7 @@ mod ingest;
 mod install_cloning;
 mod install_smoke;
 mod install_ui;
+mod note;
 mod notify_macos;
 mod packs;
 mod paths;
