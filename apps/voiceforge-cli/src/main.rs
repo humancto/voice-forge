@@ -199,6 +199,36 @@ enum Commands {
         /// or a cloned voice (created via `voiceforge clone`).
         name: String,
     },
+    /// Render long-form text (a chapter, an essay, a markdown file) to
+    /// a finished narration WAV using a v2 voice. Chunks the input,
+    /// synthesizes each chunk via fish-speech S2 Pro, and concats the
+    /// chunks with ffmpeg. Ctrl-C is safe: re-running with the same
+    /// args picks up where it left off via `<out>.progress.json`.
+    /// v0.4 audiobook killer demo.
+    Note {
+        /// Voice name. MUST be a v2 voice — run
+        /// `voiceforge voices migrate <name>` first if you have a
+        /// legacy v1 (GPT-SoVITS) clone.
+        #[arg(long)]
+        voice: String,
+        /// Input text. `.md` / `.markdown` files are stripped via
+        /// pulldown-cmark; other extensions and stdin are treated as
+        /// plain text. Defaults to stdin.
+        #[arg(long = "in")]
+        input: Option<PathBuf>,
+        /// Output WAV path. Required when `--in` is a path; defaults
+        /// to `note_<timestamp>.wav` for stdin input.
+        #[arg(long = "out")]
+        output: Option<PathBuf>,
+        /// Ignore any prior `<out>.progress.json` and re-synth every
+        /// chunk in place.
+        #[arg(long)]
+        force: bool,
+        /// `rm -rf` `<out>.chunks/` + `<out>.progress.json` on
+        /// success. Default: keep both for inspection.
+        #[arg(long)]
+        cleanup: bool,
+    },
     /// System health check — verifies the binary, ~/.voiceforge layout,
     /// audio backend, embedded TTS, optional Python server, cache,
     /// presets, and ffmpeg.
@@ -526,6 +556,29 @@ async fn main() -> Result<()> {
             }
         },
         Commands::Use { name } => use_voice_cmd(&name)?,
+        Commands::Note {
+            voice,
+            input,
+            output,
+            force,
+            cleanup,
+        } => {
+            let output = output.unwrap_or_else(|| {
+                let ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                PathBuf::from(format!("note_{ts}.wav"))
+            });
+            note::run(note::NoteArgs {
+                voice,
+                input,
+                output,
+                force,
+                cleanup,
+            })
+            .await?;
+        }
         Commands::Doctor { json } => {
             let report = doctor::run_doctor().await;
             let mut out = std::io::stdout().lock();

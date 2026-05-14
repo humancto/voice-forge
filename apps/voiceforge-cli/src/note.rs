@@ -24,11 +24,6 @@
 //!     `voice_created_at` / `voice_recipe` mismatch with a `--force`
 //!     hint.
 
-// D-1 ships pure data + parsers + cache schema; the orchestrator
-// (D-3) and CLI wiring (D-5) light up the `pub` surface. Strip this
-// allow when D-5 lands.
-#![allow(dead_code)]
-
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -463,12 +458,14 @@ pub trait NoteSynth: Send + Sync {
 /// fish-speech. Optional `fail_after` triggers an error on the Nth
 /// call (1-indexed) — used by the partial-resume-of-partial-resume
 /// integration test (rust-expert R3 / nit-8).
+#[allow(dead_code)]
 pub struct MockSynth {
     pub fail_after: Option<usize>,
     pub samples_per_chunk: u32,
     pub calls: std::sync::atomic::AtomicUsize,
 }
 
+#[allow(dead_code)]
 impl MockSynth {
     /// Default: 0.25-second silent chunks; never fails.
     pub fn new() -> Self {
@@ -743,10 +740,13 @@ pub async fn synth_all_chunks<S: NoteSynth + ?Sized>(
 #[derive(Debug, Clone)]
 pub struct SynthReport {
     pub total_chunks: usize,
+    #[allow(dead_code)]
     pub synthesized: Vec<usize>,
+    #[allow(dead_code)]
     pub skipped: Vec<usize>,
     pub chunks_dir: PathBuf,
     pub progress_path: PathBuf,
+    #[allow(dead_code)]
     pub input_sha256: String,
 }
 
@@ -801,6 +801,7 @@ pub fn v1_voice_bail_message(voice_name: &str) -> String {
 
 /// Write a silent 44.1 kHz mono PCM_16 WAV. Shared between MockSynth
 /// and any test fixture that needs a placeholder chunk WAV.
+#[allow(dead_code)]
 pub fn write_silent_wav_44100_mono(path: &Path, samples: u32) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).with_context(|| format!("mkdir {}", parent.display()))?;
@@ -934,6 +935,119 @@ pub fn pinned_ffmpeg_path() -> Result<PathBuf> {
     let state = crate::install_cloning::read_install_state_v2()
         .context("could not read v2 install state. Run `voiceforge install-cloning` first.")?;
     Ok(PathBuf::from(state.ffmpeg6_prefix).join("bin/ffmpeg"))
+}
+
+// ============================================================================
+// PR-D D-5: FishEngineNoteAdapter + production run() wrapper
+// ============================================================================
+
+/// Production `NoteSynth` impl. Wraps a `FishEngine` and the resolved
+/// (ref_wav, ref_txt) per-voice constants. One instance is constructed
+/// per `note::run` call.
+pub struct FishEngineNoteAdapter {
+    engine: crate::tts::FishEngine,
+    ref_wav: PathBuf,
+    ref_txt: String,
+}
+
+impl FishEngineNoteAdapter {
+    pub fn from_v2(profile: &crate::voices::VoiceProfileV2) -> Result<Self> {
+        let engine =
+            crate::tts::FishEngine::new().context("constructing FishEngine for voiceforge note")?;
+        let ref_wav = profile.ref_wav.clone();
+        let ref_txt = std::fs::read_to_string(&profile.ref_txt)
+            .with_context(|| format!("reading ref.txt at {}", profile.ref_txt.display()))?;
+        Ok(Self {
+            engine,
+            ref_wav,
+            ref_txt,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl NoteSynth for FishEngineNoteAdapter {
+    async fn synth(&self, text: &str, out: &Path) -> Result<()> {
+        self.engine
+            .speak_with_explicit_ref(text, &self.ref_wav, &self.ref_txt, out)
+            .await
+    }
+}
+
+/// Compute the total audio duration in seconds for a finalized WAV.
+pub fn wav_duration_secs(path: &Path) -> Result<f64> {
+    let reader = hound::WavReader::open(path)
+        .with_context(|| format!("opening {} to compute duration", path.display()))?;
+    let spec = reader.spec();
+    let samples = reader.duration() as f64;
+    Ok(samples / spec.sample_rate as f64)
+}
+
+/// Production entry point: load + validate voice, read input, install
+/// Ctrl-C handler, run `synth_all_chunks`, run `concat_chunks`,
+/// optionally cleanup, fire macOS notification.
+///
+/// The Ctrl-C signal handler is installed HERE (not in
+/// `synth_all_chunks`), so library callers can drive the orchestrator
+/// with their own cancel flag without colliding with the process-global
+/// SIGINT handler (rust-expert nit-3).
+pub async fn run(args: NoteArgs) -> Result<()> {
+    let profile = crate::voices::load_voice(&args.voice)?;
+    let v2 = match profile {
+        crate::voices::VoiceProfile::V2(v) => v,
+        crate::voices::VoiceProfile::V1(_) => bail!(v1_voice_bail_message(&args.voice)),
+    };
+
+    let (raw, is_markdown) = read_input_with_markdown_detection(&args)?;
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let c = cancel.clone();
+    tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            c.store(true, Ordering::Relaxed);
+            eprintln!("\nvoiceforge: Ctrl-C received; finishing current chunk then exiting.");
+        }
+    });
+
+    let voice_meta = VoiceMeta {
+        name: v2.name.clone(),
+        created_at: v2.created_at.clone(),
+        recipe: v2.recipe.clone(),
+    };
+    let adapter = FishEngineNoteAdapter::from_v2(&v2)?;
+    let report = synth_all_chunks(
+        &adapter,
+        &voice_meta,
+        &raw,
+        is_markdown,
+        &args,
+        cancel.clone(),
+    )
+    .await?;
+
+    let ffmpeg = pinned_ffmpeg_path()?;
+    concat_chunks(
+        &report.chunks_dir,
+        report.total_chunks,
+        &args.output,
+        &ffmpeg,
+    )
+    .await?;
+
+    if args.cleanup {
+        let _ = std::fs::remove_dir_all(&report.chunks_dir);
+        let _ = std::fs::remove_file(&report.progress_path);
+    }
+
+    let secs = wav_duration_secs(&args.output).unwrap_or(0.0);
+    println!(
+        "voiceforge: wrote {} ({} chunks, {:.1}s audio)",
+        args.output.display(),
+        report.total_chunks,
+        secs,
+    );
+    crate::notify_macos::notify_note_complete(&voice_meta.name, report.total_chunks, secs);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1760,5 +1874,28 @@ mod tests {
         assert!(body.contains("file 'chunk_0000.wav'"));
         assert!(body.contains("file 'chunk_0001.wav'"));
         assert!(body.contains("file 'chunk_0002.wav'"));
+    }
+
+    // ----- D-5: adapter + wav_duration_secs -------------------------
+
+    #[test]
+    fn wav_duration_secs_computes_from_samples_over_rate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("a.wav");
+        write_silent_wav_44100_mono(&path, 44_100).unwrap(); // 1.0 sec
+        let secs = wav_duration_secs(&path).unwrap();
+        assert!((secs - 1.0).abs() < 1e-6, "got {secs}");
+    }
+
+    #[test]
+    fn chunks_dir_for_appends_dot_chunks_suffix() {
+        let p = chunks_dir_for(Path::new("/tmp/note.wav"));
+        assert_eq!(p, Path::new("/tmp/note.wav.chunks"));
+    }
+
+    #[test]
+    fn progress_path_for_appends_dot_progress_json() {
+        let p = progress_path_for(Path::new("/tmp/note.wav"));
+        assert_eq!(p, Path::new("/tmp/note.wav.progress.json"));
     }
 }
