@@ -369,6 +369,17 @@ enum VoicesAction {
         #[arg(long)]
         force: bool,
     },
+    /// Migrate a v1 (GPT-SoVITS) voice profile to v2 (fish-speech S2
+    /// Pro) in place. Idempotent on already-v2. Leaves a `.v1.bak/`
+    /// child dir inside the voice so the original aux files can be
+    /// recovered.
+    Migrate {
+        /// Voice name to migrate.
+        name: String,
+        /// Clean up leftover staging dirs from a prior interrupted run.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[tokio::main]
@@ -508,6 +519,9 @@ async fn main() -> Result<()> {
             None => list_voices_cmd()?,
             Some(VoicesAction::Remove { name, force }) => {
                 remove_voice_cmd(&name, force)?;
+            }
+            Some(VoicesAction::Migrate { name, force }) => {
+                migrate_voice_cmd(&name, force)?;
             }
         },
         Commands::Use { name } => use_voice_cmd(&name)?,
@@ -1312,6 +1326,41 @@ fn remove_voice_cmd(name: &str, force: bool) -> Result<()> {
              Run `voiceforge use <other>` to set a new active voice.",
             DEFAULT = config::DEFAULT_VOICE
         );
+    }
+    Ok(())
+}
+
+/// `voiceforge voices migrate <name>` — convert a v1 (GPT-SoVITS) voice
+/// profile to v2 (fish-speech S2 Pro) in place. See `voices::migrate_voice`
+/// for the protocol; this wrapper just renders the report.
+fn migrate_voice_cmd(name: &str, force: bool) -> Result<()> {
+    let report = voices::migrate_voice(name, force)?;
+    match report {
+        voices::MigrateReport::AlreadyMigrated {
+            voice_name,
+            v1_bak_path,
+        } => {
+            println!("voice {voice_name:?} is already on schema 2 (fish-speech-s2-pro). No-op.");
+            if let Some(p) = v1_bak_path {
+                println!(
+                    "(recovery files from a prior migration still at {})",
+                    p.display()
+                );
+            }
+        }
+        voices::MigrateReport::Migrated {
+            voice_name,
+            original_recipe,
+            new_recipe,
+            v1_bak_path,
+        } => {
+            println!(
+                "migrated voice {voice_name:?}: {original_recipe} -> {new_recipe}.\n\
+                 Original aux files preserved at {} — delete when satisfied.\n\
+                 Next `voiceforge say --voice {voice_name}` will re-synth via fish-speech.",
+                v1_bak_path.display(),
+            );
+        }
     }
     Ok(())
 }
