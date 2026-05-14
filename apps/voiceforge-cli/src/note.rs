@@ -33,6 +33,8 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 /// Bump this on any change to `chunk_text` so existing progress.json
 /// files invalidate cleanly (the loader bails with a `--force` hint).
@@ -511,12 +513,297 @@ impl NoteSynth for MockSynth {
     }
 }
 
+// ============================================================================
+// PR-D D-3: orchestrator (synth loop + resume cache)
+// ============================================================================
+
+/// Arguments for `voiceforge note`. Field naming intentionally avoids
+/// the Rust keyword `in` (rust-expert A3); the CLI exposes it as
+/// `--in` via `#[arg(long = "in")]` in `main.rs` (D-5).
+#[derive(Debug, Clone)]
+pub struct NoteArgs {
+    pub voice: String,
+    /// `None` = stdin. If `Some(path)`, the orchestrator caller reads
+    /// it; `run_with` itself receives the raw bytes already.
+    pub input: Option<PathBuf>,
+    pub output: PathBuf,
+    pub force: bool,
+    pub cleanup: bool,
+}
+
+/// Snapshot of the v2 voice fields the orchestrator needs. Avoids
+/// the `run_with` test path needing to construct a full
+/// `VoiceProfileV2` with serde-skipped `dir` / `ref_wav` / `ref_txt`
+/// fields populated.
+#[derive(Debug, Clone)]
+pub struct VoiceMeta {
+    pub name: String,
+    pub created_at: String,
+    pub recipe: String,
+}
+
+/// Locate `<out>.chunks/`.
+pub fn chunks_dir_for(output: &Path) -> PathBuf {
+    let stem = output
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "note".to_string());
+    output.with_file_name(format!("{stem}.chunks"))
+}
+
+/// Locate `<out>.progress.json`.
+pub fn progress_path_for(output: &Path) -> PathBuf {
+    let stem = output
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "note".to_string());
+    output.with_file_name(format!("{stem}.progress.json"))
+}
+
+pub fn chunk_wav_path(chunks_dir: &Path, index: usize) -> PathBuf {
+    chunks_dir.join(format!("chunk_{index:04}.wav"))
+}
+
+fn chunk_wav_tmp_path(chunks_dir: &Path, index: usize) -> PathBuf {
+    chunks_dir.join(format!("chunk_{index:04}.wav.tmp"))
+}
+
+/// Best-effort fsync of a file. On any error, we propagate — chunk
+/// durability is a load-bearing claim per the plan's B3 nit.
+fn fsync_file(path: &Path) -> Result<()> {
+    let f = std::fs::File::open(path)
+        .with_context(|| format!("opening {} for fsync", path.display()))?;
+    f.sync_all()
+        .with_context(|| format!("fsyncing {}", path.display()))?;
+    Ok(())
+}
+
+/// Best-effort fsync of a directory. On platforms / FSes where this
+/// isn't supported (Windows, some filesystems), errors are logged
+/// but not propagated — the worst case is one chunk re-synth on
+/// power loss, which the resume cache already handles.
+fn fsync_dir_best_effort(path: &Path) {
+    match std::fs::File::open(path) {
+        Ok(f) => {
+            if let Err(e) = f.sync_all() {
+                eprintln!("voiceforge: fsync of {} failed: {e}", path.display());
+            }
+        }
+        Err(e) => {
+            eprintln!(
+                "voiceforge: open-for-fsync of {} failed: {e}",
+                path.display()
+            );
+        }
+    }
+}
+
+/// Synthesize every chunk required to produce `args.output`. Does NOT
+/// concat — D-4 adds that on top. Tests inject `synth` directly.
+///
+/// `cancel` is set by an external `tokio::signal::ctrl_c` task
+/// (installed only in `run`, never in `run_with`) — see rust-expert
+/// nit-3.
+pub async fn synth_all_chunks<S: NoteSynth + ?Sized>(
+    synth: &S,
+    voice: &VoiceMeta,
+    raw_input: &str,
+    is_markdown: bool,
+    args: &NoteArgs,
+    cancel: Arc<AtomicBool>,
+) -> Result<SynthReport> {
+    // Step 1: compute input_sha256 over the raw bytes (BEFORE markdown
+    // strip). This is the "did the user edit the input file?" detector
+    // rust-expert S3 asked for.
+    let input_sha256 = sha256_hex(raw_input.as_bytes());
+
+    // Step 2: chunk.
+    let chunks = chunk_text(
+        raw_input,
+        is_markdown,
+        &voice.name,
+        &voice.created_at,
+        &voice.recipe,
+    );
+    if chunks.is_empty() {
+        bail!(
+            "input has no narrate-able text after markdown stripping. \
+             Check that the file isn't empty or all code fences."
+        );
+    }
+    let total = chunks.len();
+
+    // Step 3: paths.
+    let chunks_dir = chunks_dir_for(&args.output);
+    std::fs::create_dir_all(&chunks_dir)
+        .with_context(|| format!("mkdir {}", chunks_dir.display()))?;
+    let progress_path = progress_path_for(&args.output);
+
+    // Step 4: load + validate prior progress (skipped on --force).
+    let mut progress = if args.force {
+        ProgressJson::fresh(
+            &voice.name,
+            &voice.created_at,
+            &voice.recipe,
+            &input_sha256,
+            total,
+        )
+    } else {
+        match load_progress_if_valid(
+            &progress_path,
+            &voice.name,
+            &voice.created_at,
+            &voice.recipe,
+            &input_sha256,
+            total,
+        )? {
+            Some(p) => p,
+            None => ProgressJson::fresh(
+                &voice.name,
+                &voice.created_at,
+                &voice.recipe,
+                &input_sha256,
+                total,
+            ),
+        }
+    };
+
+    // Stale-from-prior-rendering chunks may have been deleted under us;
+    // prune the `completed` list to entries whose WAV is still present
+    // AND whose sha matches the (now recomputed) chunk_sha (rust-expert R2).
+    progress.completed.retain(|e| {
+        if !e.wav_path.is_file() {
+            return false;
+        }
+        let chunk = chunks.iter().find(|c| c.index == e.index);
+        matches!(chunk, Some(c) if c.sha256 == e.sha256)
+    });
+    write_progress_atomically(&progress, &progress_path)?;
+
+    // Step 5: synth loop. Cancel checked at top of iteration, NEVER
+    // select! over the synth await (rust-expert B4). A mid-synth
+    // process termination is safe because the next run spawns a
+    // fresh python child — the stale-pipe poisoning only matters
+    // within one process.
+    let mut synthesized: Vec<usize> = Vec::new();
+    let mut skipped: Vec<usize> = Vec::new();
+    for chunk in &chunks {
+        if cancel.load(Ordering::Relaxed) {
+            bail!(
+                "cancelled by Ctrl-C. Resume with the same args: \
+                 voiceforge note --voice {} --in <same> --out {}",
+                voice.name,
+                args.output.display()
+            );
+        }
+        let already_done = progress
+            .completed
+            .iter()
+            .any(|e| e.index == chunk.index && e.sha256 == chunk.sha256);
+        if already_done {
+            skipped.push(chunk.index);
+            continue;
+        }
+        let chunk_tmp = chunk_wav_tmp_path(&chunks_dir, chunk.index);
+        let chunk_final = chunk_wav_path(&chunks_dir, chunk.index);
+        synth
+            .synth(&chunk.text, &chunk_tmp)
+            .await
+            .with_context(|| format!("synthesizing chunk {}", chunk.index))?;
+        fsync_file(&chunk_tmp)?;
+        std::fs::rename(&chunk_tmp, &chunk_final).with_context(|| {
+            format!(
+                "rename {} -> {}",
+                chunk_tmp.display(),
+                chunk_final.display()
+            )
+        })?;
+        fsync_file(&chunk_final)?;
+        fsync_dir_best_effort(&chunks_dir);
+        progress.add(chunk.index, chunk.sha256.clone(), chunk_final.clone());
+        write_progress_atomically(&progress, &progress_path)?;
+        if let Some(parent) = progress_path.parent() {
+            fsync_dir_best_effort(parent);
+        }
+        synthesized.push(chunk.index);
+    }
+
+    Ok(SynthReport {
+        total_chunks: total,
+        synthesized,
+        skipped,
+        chunks_dir,
+        progress_path,
+        input_sha256,
+    })
+}
+
+/// Outcome of `synth_all_chunks`. The CLI shim consumes this for the
+/// human summary; D-4 reads `chunks_dir` to drive the concat.
+#[derive(Debug, Clone)]
+pub struct SynthReport {
+    pub total_chunks: usize,
+    pub synthesized: Vec<usize>,
+    pub skipped: Vec<usize>,
+    pub chunks_dir: PathBuf,
+    pub progress_path: PathBuf,
+    pub input_sha256: String,
+}
+
+/// Read `args.input` (or stdin) to a String + detect markdown via
+/// extension. Used by `run` (D-5); test callers can short-circuit by
+/// calling `synth_all_chunks` directly with a known-good string.
+pub fn read_input_with_markdown_detection(args: &NoteArgs) -> Result<(String, bool)> {
+    match &args.input {
+        Some(path) => {
+            let is_markdown = matches!(
+                path.extension().and_then(|e| e.to_str()),
+                Some("md") | Some("markdown")
+            );
+            // If a `<out>.progress.json` exists AND stdin was used,
+            // bail per rust-expert B7 — but this branch is path-only,
+            // so stdin checks belong in the None arm below.
+            let raw = std::fs::read_to_string(path)
+                .with_context(|| format!("reading {}", path.display()))?;
+            Ok((raw, is_markdown))
+        }
+        None => {
+            // Stdin + resume incompatibility check (rust-expert B7).
+            let progress = progress_path_for(&args.output);
+            if progress.is_file() && !args.force {
+                bail!(
+                    "--in from stdin doesn't support resume. \
+                     Re-run with --in <file>, or delete {} and retry, \
+                     or pass --force.",
+                    progress.display()
+                );
+            }
+            let mut buf = String::new();
+            use std::io::Read;
+            std::io::stdin()
+                .read_to_string(&mut buf)
+                .context("reading stdin")?;
+            Ok((buf, false))
+        }
+    }
+}
+
+/// Bail with exit code 2 + helpful migrate hint when the voice is v1.
+/// `run` (D-5) maps this to `process::exit(2)`. For now we just bail
+/// with a clearly-marked message that callers can match on.
+pub fn v1_voice_bail_message(voice_name: &str) -> String {
+    format!(
+        "voice {voice_name:?} is on schema 1 (gpt-sovits).\n\
+         Run: voiceforge voices migrate {voice_name}\n\
+         Then retry this command."
+    )
+}
+
 /// Write a silent 44.1 kHz mono PCM_16 WAV. Shared between MockSynth
 /// and any test fixture that needs a placeholder chunk WAV.
 pub fn write_silent_wav_44100_mono(path: &Path, samples: u32) -> Result<()> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("mkdir {}", parent.display()))?;
+        std::fs::create_dir_all(parent).with_context(|| format!("mkdir {}", parent.display()))?;
     }
     let spec = hound::WavSpec {
         channels: 1,
@@ -930,5 +1217,315 @@ mod tests {
         let body = format!("note rendered ({} chunks, {:.1}s)", 7, 12.345);
         assert!(body.contains("7 chunks"));
         assert!(body.contains("12.3s"));
+    }
+
+    // ----- D-3: orchestrator (synth_all_chunks) ----------------------
+
+    fn voice_meta() -> VoiceMeta {
+        VoiceMeta {
+            name: "tyson".into(),
+            created_at: "2026-01-01".into(),
+            recipe: "fish-speech-s2-pro".into(),
+        }
+    }
+
+    fn args_with_out(out: &Path) -> NoteArgs {
+        NoteArgs {
+            voice: "tyson".into(),
+            input: Some(PathBuf::from("ignored-for-direct-call")),
+            output: out.to_path_buf(),
+            force: false,
+            cleanup: false,
+        }
+    }
+
+    /// Plan test #14 (rust-expert nit-5 sharpened): after each chunk
+    /// completes, progress.json has the full list with byte-matching
+    /// shas and each wav_path file exists + is non-empty.
+    #[tokio::test]
+    async fn note_run_writes_progress_json_after_each_chunk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("note.wav");
+        let synth = MockSynth::new();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let raw = "para one\n\npara two\n\npara three";
+        let report = synth_all_chunks(
+            &synth,
+            &voice_meta(),
+            raw,
+            false,
+            &args_with_out(&out),
+            cancel,
+        )
+        .await
+        .expect("synth all");
+        assert_eq!(report.total_chunks, 3);
+        assert_eq!(report.synthesized, vec![0, 1, 2]);
+        assert!(report.skipped.is_empty());
+
+        // progress.json has all three with matching shas and existing wavs.
+        let raw_json = std::fs::read_to_string(&report.progress_path).unwrap();
+        let progress: ProgressJson = serde_json::from_str(&raw_json).unwrap();
+        assert_eq!(progress.completed.len(), 3);
+        let expected_shas: Vec<String> = chunk_text(
+            raw,
+            false,
+            &voice_meta().name,
+            &voice_meta().created_at,
+            &voice_meta().recipe,
+        )
+        .into_iter()
+        .map(|c| c.sha256)
+        .collect();
+        for (i, e) in progress.completed.iter().enumerate() {
+            assert_eq!(e.sha256, expected_shas[i], "sha mismatch at index {i}");
+            assert!(e.wav_path.is_file(), "wav missing at {:?}", e.wav_path);
+            let bytes = std::fs::metadata(&e.wav_path).unwrap().len();
+            assert!(bytes > 44, "wav at {:?} is empty/too-short", e.wav_path);
+        }
+
+        // No stray .tmp files.
+        for entry in std::fs::read_dir(&report.chunks_dir).unwrap() {
+            let p = entry.unwrap().path();
+            assert!(
+                !p.to_string_lossy().ends_with(".tmp"),
+                "leftover tmp file: {p:?}"
+            );
+        }
+    }
+
+    /// Plan test #15: resume skips already-done chunks.
+    #[tokio::test]
+    async fn note_run_skips_completed_chunks_on_resume() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("note.wav");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let raw = "a\n\nb\n\nc";
+        let args = args_with_out(&out);
+        let synth1 = MockSynth::new();
+        let r1 = synth_all_chunks(&synth1, &voice_meta(), raw, false, &args, cancel.clone())
+            .await
+            .unwrap();
+        assert_eq!(synth1.call_count(), 3);
+
+        // Second run: same input, no force → all chunks skipped.
+        let synth2 = MockSynth::new();
+        let r2 = synth_all_chunks(&synth2, &voice_meta(), raw, false, &args, cancel)
+            .await
+            .unwrap();
+        assert_eq!(synth2.call_count(), 0);
+        assert_eq!(r2.synthesized.len(), 0);
+        assert_eq!(r2.skipped.len(), 3);
+        // Progress path is stable.
+        assert_eq!(r1.progress_path, r2.progress_path);
+    }
+
+    /// Plan test #16 (rust-expert R2 negative): resync when WAV is
+    /// missing.
+    #[tokio::test]
+    async fn note_run_resynths_when_chunk_wav_is_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("note.wav");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let raw = "a\n\nb\n\nc";
+        let args = args_with_out(&out);
+        let synth1 = MockSynth::new();
+        let r1 = synth_all_chunks(&synth1, &voice_meta(), raw, false, &args, cancel.clone())
+            .await
+            .unwrap();
+        // Delete chunk 1's WAV.
+        std::fs::remove_file(chunk_wav_path(&r1.chunks_dir, 1)).unwrap();
+        let synth2 = MockSynth::new();
+        let r2 = synth_all_chunks(&synth2, &voice_meta(), raw, false, &args, cancel)
+            .await
+            .unwrap();
+        // Only chunk 1 re-synthed.
+        assert_eq!(synth2.call_count(), 1);
+        assert_eq!(r2.synthesized, vec![1]);
+        assert_eq!(r2.skipped, vec![0, 2]);
+    }
+
+    /// Plan test #17: force re-synths every chunk.
+    #[tokio::test]
+    async fn note_run_force_overwrites_chunks_in_place() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("note.wav");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let raw = "a\n\nb\n\nc";
+
+        // First run baseline.
+        let args1 = args_with_out(&out);
+        let synth1 = MockSynth::new();
+        let r1 = synth_all_chunks(&synth1, &voice_meta(), raw, false, &args1, cancel.clone())
+            .await
+            .unwrap();
+
+        // Pre-stage a sentinel file in chunks_dir so we can assert
+        // --force does NOT rm -rf the dir (rust-expert nit-6).
+        let sentinel = r1.chunks_dir.join("sentinel.txt");
+        std::fs::write(&sentinel, b"survive-me").unwrap();
+
+        // Second run with --force.
+        let mut args2 = args_with_out(&out);
+        args2.force = true;
+        let synth2 = MockSynth::new();
+        let r2 = synth_all_chunks(&synth2, &voice_meta(), raw, false, &args2, cancel)
+            .await
+            .unwrap();
+        assert_eq!(synth2.call_count(), 3);
+        assert_eq!(r2.synthesized, vec![0, 1, 2]);
+        assert!(r2.skipped.is_empty());
+        // Sentinel survives — force didn't rm the dir.
+        assert!(sentinel.is_file(), "force must not rm chunks dir");
+    }
+
+    /// Plan test #19: progress.json voice mismatch bails (covered by
+    /// load_progress_if_valid unit tests above — this one exercises
+    /// the orchestrator path).
+    #[tokio::test]
+    async fn note_run_bails_on_progress_json_voice_mismatch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("note.wav");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let raw = "a\n\nb\n\nc";
+        let args = args_with_out(&out);
+        synth_all_chunks(
+            &MockSynth::new(),
+            &voice_meta(),
+            raw,
+            false,
+            &args,
+            cancel.clone(),
+        )
+        .await
+        .unwrap();
+        // Run with a different voice.
+        let other = VoiceMeta {
+            name: "neil".into(),
+            created_at: "2026-01-01".into(),
+            recipe: "fish-speech-s2-pro".into(),
+        };
+        let err = synth_all_chunks(&MockSynth::new(), &other, raw, false, &args, cancel)
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("--force"));
+    }
+
+    /// Plan test #20 (rust-expert S3): progress.json input_sha256
+    /// mismatch bails.
+    #[tokio::test]
+    async fn note_run_bails_on_progress_json_input_sha_mismatch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("note.wav");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let args = args_with_out(&out);
+        synth_all_chunks(
+            &MockSynth::new(),
+            &voice_meta(),
+            "a\n\nb",
+            false,
+            &args,
+            cancel.clone(),
+        )
+        .await
+        .unwrap();
+        // Same chunk count (still 2 paragraphs after the swap) but
+        // different content → different input_sha256 AND different
+        // per-chunk shas.
+        let err = synth_all_chunks(
+            &MockSynth::new(),
+            &voice_meta(),
+            "x\n\ny",
+            false,
+            &args,
+            cancel,
+        )
+        .await
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("input file changed"),
+            "expected input-changed msg, got: {msg}"
+        );
+        assert!(msg.contains("--force"));
+    }
+
+    /// Plan test #21 (rust-expert S2): progress.json total_chunks
+    /// mismatch bails.
+    #[tokio::test]
+    async fn note_run_bails_on_progress_json_total_chunks_mismatch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("note.wav");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let args = args_with_out(&out);
+        synth_all_chunks(
+            &MockSynth::new(),
+            &voice_meta(),
+            "a\n\nb",
+            false,
+            &args,
+            cancel.clone(),
+        )
+        .await
+        .unwrap();
+        // Add a paragraph → total_chunks changes 2 → 3, but also
+        // input_sha256 changes. Both bail conditions fire; either
+        // message is acceptable.
+        let err = synth_all_chunks(
+            &MockSynth::new(),
+            &voice_meta(),
+            "a\n\nb\n\nc",
+            false,
+            &args,
+            cancel,
+        )
+        .await
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("--force"), "expected --force hint, got: {msg}");
+    }
+
+    /// Empty input bails up front with no chunks written.
+    #[tokio::test]
+    async fn note_run_bails_on_empty_input() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("note.wav");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let args = args_with_out(&out);
+        let err = synth_all_chunks(
+            &MockSynth::new(),
+            &voice_meta(),
+            "   ",
+            false,
+            &args,
+            cancel,
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("no narrate-able text"));
+    }
+
+    /// Cancel flag set before the first chunk: bails cleanly without
+    /// any synth call.
+    #[tokio::test]
+    async fn note_run_bails_when_cancel_flag_pre_set() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("note.wav");
+        let cancel = Arc::new(AtomicBool::new(true));
+        let args = args_with_out(&out);
+        let synth = MockSynth::new();
+        let err = synth_all_chunks(&synth, &voice_meta(), "a\n\nb", false, &args, cancel)
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("cancelled"));
+        assert_eq!(synth.call_count(), 0);
+    }
+
+    /// V1-voice helper renders the expected migrate hint.
+    #[test]
+    fn v1_voice_bail_message_includes_migrate_hint() {
+        let msg = v1_voice_bail_message("peter");
+        assert!(msg.contains("voiceforge voices migrate peter"));
+        assert!(msg.contains("schema 1"));
     }
 }
