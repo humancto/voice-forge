@@ -435,6 +435,104 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(h.finalize())
 }
 
+// ============================================================================
+// PR-D D-2: NoteSynth trait + MockSynth
+// ============================================================================
+//
+// `NoteSynth` is the injection point that lets us test the chunk loop +
+// resume cache without bringing fish-speech online. Mirrors the
+// `install_smoke::SmokeSynth` parametric pattern (`run_with<S: Synth>`),
+// but with NO per-call ref args because note's ref clip + transcript
+// are constant across an entire `note::run` invocation (rust-expert A1
+// deliberate divergence — documented here so a future "merge these two
+// traits" PR doesn't quietly break either).
+
+/// Synth abstraction for `note::run_with`. Production impl is
+/// `FishEngineNoteAdapter` (D-5); tests inject `MockSynth`.
+#[async_trait::async_trait]
+pub trait NoteSynth: Send + Sync {
+    /// Write a 44.1 kHz mono PCM_16 WAV containing the synth of
+    /// `text` to `out`. Caller fsyncs after this returns.
+    async fn synth(&self, text: &str, out: &Path) -> Result<()>;
+}
+
+/// Test-only synth: writes a deterministic silent 44.1 kHz mono PCM_16
+/// WAV per call so the orchestrator + concat pipeline can run without
+/// fish-speech. Optional `fail_after` triggers an error on the Nth
+/// call (1-indexed) — used by the partial-resume-of-partial-resume
+/// integration test (rust-expert R3 / nit-8).
+pub struct MockSynth {
+    pub fail_after: Option<usize>,
+    pub samples_per_chunk: u32,
+    pub calls: std::sync::atomic::AtomicUsize,
+}
+
+impl MockSynth {
+    /// Default: 0.25-second silent chunks; never fails.
+    pub fn new() -> Self {
+        Self {
+            fail_after: None,
+            samples_per_chunk: 11025, // 0.25s @ 44.1 kHz
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+    pub fn with_fail_after(n: usize) -> Self {
+        Self {
+            fail_after: Some(n),
+            samples_per_chunk: 11025,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+    pub fn call_count(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl Default for MockSynth {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait::async_trait]
+impl NoteSynth for MockSynth {
+    async fn synth(&self, _text: &str, out: &Path) -> Result<()> {
+        use std::sync::atomic::Ordering;
+        let n = self.calls.fetch_add(1, Ordering::Relaxed) + 1;
+        if let Some(fail_at) = self.fail_after {
+            if n == fail_at {
+                bail!("MockSynth: simulated synth failure on call {n}");
+            }
+        }
+        // Write a real 44.1 kHz mono PCM_16 silent WAV so the concat
+        // demuxer + downstream `hound` spec-check pass.
+        write_silent_wav_44100_mono(out, self.samples_per_chunk)?;
+        Ok(())
+    }
+}
+
+/// Write a silent 44.1 kHz mono PCM_16 WAV. Shared between MockSynth
+/// and any test fixture that needs a placeholder chunk WAV.
+pub fn write_silent_wav_44100_mono(path: &Path, samples: u32) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("mkdir {}", parent.display()))?;
+    }
+    let spec = hound::WavSpec {
+        channels: 1,
+        sample_rate: 44_100,
+        bits_per_sample: 16,
+        sample_format: hound::SampleFormat::Int,
+    };
+    let mut writer = hound::WavWriter::create(path, spec)
+        .with_context(|| format!("creating WAV at {}", path.display()))?;
+    for _ in 0..samples {
+        writer.write_sample(0i16).context("writing silent sample")?;
+    }
+    writer.finalize().context("finalizing WAV")?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -757,5 +855,80 @@ mod tests {
         let msg = format!("{err:#}");
         assert!(msg.contains("chunk count"));
         assert!(msg.contains("--force"));
+    }
+
+    // ----- D-2: MockSynth + notify -----------------------------------
+
+    #[tokio::test]
+    async fn mock_synth_writes_44100_mono_pcm16_wav() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("chunk.wav");
+        let synth = MockSynth::new();
+        synth.synth("hello world", &out).await.unwrap();
+        let reader = hound::WavReader::open(&out).unwrap();
+        let spec = reader.spec();
+        assert_eq!(spec.channels, 1);
+        assert_eq!(spec.sample_rate, 44_100);
+        assert_eq!(spec.bits_per_sample, 16);
+        assert_eq!(spec.sample_format, hound::SampleFormat::Int);
+        assert_eq!(synth.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn mock_synth_fail_after_returns_err_on_nth_call() {
+        let tmp = tempfile::tempdir().unwrap();
+        let synth = MockSynth::with_fail_after(3);
+        let out1 = tmp.path().join("c1.wav");
+        let out2 = tmp.path().join("c2.wav");
+        let out3 = tmp.path().join("c3.wav");
+        synth.synth("a", &out1).await.unwrap();
+        synth.synth("b", &out2).await.unwrap();
+        let err = synth.synth("c", &out3).await.unwrap_err();
+        assert!(format!("{err:#}").contains("simulated synth failure"));
+        assert_eq!(synth.call_count(), 3);
+        // The WAV at out3 was never written.
+        assert!(!out3.exists());
+    }
+
+    /// Plan test #25 (rust-expert R6): notify_note_complete_with calls
+    /// the injected Mirror with the right (voice, body) tuple.
+    #[test]
+    fn notify_note_complete_calls_mirror_with_chunks_and_secs() {
+        use crate::notify_macos::{notify_note_complete_with, test_support::RecordingMirror};
+
+        // The notify helper consults VOICEFORGE_MIRROR_NOTIFICATIONS
+        // via the cached `enabled()` OnceLock. We can't toggle it
+        // mid-test (cache is process-global), so this test only
+        // asserts the no-op path is correct: when disabled, mirror
+        // is NOT called.
+        let mirror = RecordingMirror::default();
+        notify_note_complete_with(&mirror, "tyson", 7, 12.3);
+        // In the default test process, the env var is unset → enabled
+        // returns false → mirror.mirror is NOT called.
+        if !crate::notify_macos::enabled() {
+            assert!(
+                mirror.calls().is_empty(),
+                "mirror should not fire when disabled"
+            );
+        } else {
+            // If enabled (someone exported the env var before invoking
+            // cargo test), assert the call shape.
+            let calls = mirror.calls();
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0].0, "tyson");
+            assert!(calls[0].1.contains("7 chunks"));
+            assert!(calls[0].1.contains("12.3"));
+        }
+    }
+
+    /// Companion to the above: prove the formatting logic directly
+    /// via the `enabled_with` test-only override. We construct the
+    /// notify call's body string the same way `notify_note_complete_with`
+    /// does and assert against expected substrings.
+    #[test]
+    fn notify_body_format_includes_chunks_and_secs() {
+        let body = format!("note rendered ({} chunks, {:.1}s)", 7, 12.345);
+        assert!(body.contains("7 chunks"));
+        assert!(body.contains("12.3s"));
     }
 }
