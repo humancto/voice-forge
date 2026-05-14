@@ -412,7 +412,7 @@
     <section id="use-cases">
       <div class="section-tag"><span class="num">00</span> <span>what it does today</span> <span class="rule"></span> <span>six real flows</span></div>
       <h2>what you can do with <span class="accent">voiceforge today</span>.</h2>
-      <p class="lede">six concrete flows. all live on <code>main</code>, all tested, all on <code>voiceforge --version</code> 0.4.0+. nothing aspirational below. <strong>cloning runs through fish-speech S2 Pro</strong>; the 5 shipped packs (pre-rendered with the same engine) work zero-install.</p>
+      <p class="lede">seven concrete flows. all live on <code>main</code>, all tested, all on <code>voiceforge --version</code> 0.4.0+. nothing aspirational below. <strong>cloning runs through fish-speech S2 Pro</strong>; the 5 shipped packs (pre-rendered with the same engine) work zero-install. <strong>v0.4 ships <code>voiceforge note</code> — full audiobook narration in a cloned voice — plus <code>voiceforge voices migrate</code> for users upgrading legacy v1 voices.</strong></p>
 
       <div class="install-cards" style="grid-template-columns: 1fr; gap: 18px; max-width: 800px; margin-top: 24px;">
         <div class="term">
@@ -466,7 +466,8 @@
 <span class="out">→ studio-quality output. ~3-8 s synth on CPU per utterance (M-series).
 → yt-dlp hardened: --no-playlist --max-filesize 250M --socket-timeout 30 --retries 3.
 → EBU R128 loudnorm during ingest — quiet recordings get bumped to broadcast level. silent inputs rejected.
-→ schema-2 marker + standalone SMOKE.toml; v1 GPT-SoVITS installs keep working (set VOICEFORGE_TTS_ENGINE=gpt-sovits-v2).</span></div>
+→ schema-2 marker + standalone SMOKE.toml; v1 GPT-SoVITS installs keep working (set VOICEFORGE_TTS_ENGINE=gpt-sovits-v2).
+→ v0.4: upgrade an existing v1 voice in-place — <span class="voice">voiceforge voices migrate peter</span> — atomic, idempotent, leaves .v1.bak/ for recovery.</span></div>
         </div>
 
         <div class="term">
@@ -477,6 +478,19 @@
 <span class="prompt">$</span> my-script --stream | <span class="voice">voiceforge hook --voice peter --passthrough</span> | jq
 <span class="out">→ exit codes distinguish daemon-down (2) from rejected-frame (1) from post-connect-garbage (4).
 → backpressure-safe via per-frame fail threshold; passthrough preserves stdout pipelines.</span></div>
+        </div>
+
+        <div class="term">
+          <div class="head"><div class="dots"><span></span><span></span><span></span></div><div class="title">7 — render long-form text (chapters, essays, .md) into narration WAVs (v0.4)</div></div>
+<div class="body"><span class="prompt">$</span> voiceforge note --voice <span class="voice">tyson</span> --in chapter.md --out chapter.wav
+<span class="ghost">  chunking: paragraph-aware via pulldown-cmark; ≤500 chars per chunk</span>
+<span class="ghost">  [████████████████████████████░░░░] 28/32 chunks · synth via fish-speech S2 Pro</span>
+<span class="ghost">  ^C  (ctrl-c is safe — re-run the same command to resume)</span>
+<span class="prompt">$</span> voiceforge note --voice <span class="voice">tyson</span> --in chapter.md --out chapter.wav
+<span class="out">→ resumes from &lt;out&gt;.progress.json — only re-synths the 4 unfinished chunks. wrote chapter.wav (32 chunks, 412.6s audio).</span>
+<span class="out">→ chunk-write ordering is tmp + fsync + rename + fsync + write progress — power loss costs at most 1 chunk.
+→ every chunk verified 44.1 kHz mono PCM_16 before ffmpeg -c copy concat (pinned ffmpeg from the v2 install).
+→ v2-only; v1 voices bail with a clear "run voiceforge voices migrate" hint.</span></div>
         </div>
       </div>
 
@@ -678,6 +692,8 @@ ok: 10  warn: 0   error: 0</div>
           <tr style="background: var(--surface-2);"><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge ingest &lt;input&gt; &lt;output&gt;</code></td><td style="padding: 8px 10px; vertical-align: top;">transcodes any audio source to canonical 32 kHz mono 16-bit pcm WAV. accepts file paths and URLs. validates 10–60 s duration. applies loudnorm. rejects silent.</td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">prep audio for cloning manually</td></tr>
           <tr><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge voices</code></td><td style="padding: 8px 10px; vertical-align: top;">lists built-in presets, cloned voices, AND installed packs in one view. <code>voiceforge voices remove &lt;name&gt;</code> deletes a clone.</td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">audit what voices you have</td></tr>
           <tr style="background: var(--surface-2);"><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge use &lt;name&gt;</code></td><td style="padding: 8px 10px; vertical-align: top;">sets active default voice. when <code>--voice</code> is omitted on say/run, this is what plays.</td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">pick a default per-machine</td></tr>
+          <tr><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge voices migrate &lt;name&gt;</code></td><td style="padding: 8px 10px; vertical-align: top;">atomic v1→v2 in-place migration of a GPT-SoVITS voice to fish-speech S2 Pro. preserves cache-key invariants. leaves a <code>.v1.bak/</code> child for recovery. idempotent on already-v2 voices. <strong>v0.4.</strong></td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">upgrade legacy v1 voices to studio quality</td></tr>
+          <tr style="background: var(--surface-2);"><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge note --voice X --in F --out F</code></td><td style="padding: 8px 10px; vertical-align: top;">renders long-form text (.md or .txt or stdin) to a finished narration WAV in voice X. paragraph-aware chunking via pulldown-cmark. resume cache survives Ctrl-C. ffmpeg <code>-c copy</code> concat (no re-encode). v2 voices only. <strong>v0.4 audiobook killer demo.</strong></td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">narrate a chapter, an essay, a blog post</td></tr>
           <tr><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge doctor [--json]</code></td><td style="padding: 8px 10px; vertical-align: top;">10-check system health: binary, home, audio backend, embedded TTS, python server, cache, presets, config.toml, ffmpeg, yt-dlp, daemon socket, cloning install. JSON for tooling.</td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">diagnose anything weird</td></tr>
         </tbody>
       </table>
