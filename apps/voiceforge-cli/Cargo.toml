@@ -57,6 +57,12 @@ terminal_size = "0.4"
 # ecosystem standardizes on for CLI progress; respects NO_COLOR
 # and !TTY automatically (no double-render with our branding gate).
 indicatif = "0.17"
+# v0.4 PR-D — voiceforge note CLI. CommonMark parser for the .md
+# input path. Streaming event API + zero transitive deps the project
+# doesn't already have. Hand-rolled regex was rejected by rust-expert
+# review as a "40 LoC bug factory" given the prose-correctness
+# requirements of the audiobook demo.
+pulldown-cmark = { version = "0.10", default-features = false }
 
 [dev-dependencies]
 hound = "3"

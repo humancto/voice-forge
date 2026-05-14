@@ -184,6 +184,29 @@ fn spawn_osascript(_voice: &str, _text: &str) {
     // bridge would go here as a `notify-send` invocation.
 }
 
+/// PR-D D-2: notify on `voiceforge note` completion. Test-injectable
+/// over `Mirror` so unit tests can assert the call without spawning
+/// osascript.
+pub(crate) fn notify_note_complete_with(
+    mirror: &dyn Mirror,
+    voice: &str,
+    chunks: usize,
+    secs: f64,
+) {
+    if !enabled() {
+        return;
+    }
+    mirror.mirror(
+        voice,
+        &format!("note rendered ({chunks} chunks, {secs:.1}s)"),
+    );
+}
+
+#[allow(dead_code)]
+pub(crate) fn notify_note_complete(voice: &str, chunks: usize, secs: f64) {
+    notify_note_complete_with(&*default_mirror(), voice, chunks, secs);
+}
+
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::Mirror;
