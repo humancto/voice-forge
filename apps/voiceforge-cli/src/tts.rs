@@ -642,7 +642,7 @@ impl CloningEngine {
     pub async fn speak(&self, text: &str, voice: &str) -> Result<PathBuf> {
         let profile =
             voices::load_voice(voice).with_context(|| format!("loading cloned voice {voice}"))?;
-        let out = self.cache_path_for(text, voice, &profile.created_at);
+        let out = self.cache_path_for(text, voice, profile.created_at());
 
         if out.exists() {
             return Ok(out);
@@ -850,7 +850,7 @@ impl FishEngine {
     pub async fn speak(&self, text: &str, voice: &str) -> Result<PathBuf> {
         let profile =
             voices::load_voice(voice).with_context(|| format!("loading cloned voice {voice}"))?;
-        let out = self.cache_path_for(text, voice, &profile.created_at);
+        let out = self.cache_path_for(text, voice, profile.created_at());
 
         if out.exists() {
             return Ok(out);

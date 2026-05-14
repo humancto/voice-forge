@@ -1,12 +1,20 @@
 //! Voice profile storage at `~/.voiceforge/voices/<name>/`.
 //!
-//! Each cloned voice is a directory containing:
-//!   profile.toml         schema, source, recipe, created_at
+//! Two schemas coexist (PR-C scope):
+//!
+//! **v1 (GPT-SoVITS, recipe=`gpt-sovits-v2-multi-aux-ref`)** — legacy.
+//!   profile.toml         schema=1, source, recipe, created_at, aux_count
 //!   ref_main.wav + .txt  the main reference clip (10 s mono 32 kHz)
 //!   aux_1..5.wav + .txt  five auxiliary references for tone fusion
 //!
+//! **v2 (fish-speech S2 Pro, recipe=`fish-speech-s2-pro`)** — v0.4 default.
+//!   profile.toml         schema=2, source, recipe, created_at
+//!   ref.wav + .txt       single 8-30s reference clip (32 kHz mono)
+//!
 //! Loading a voice asserts every referenced file exists, the recipe is
-//! known, and the schema matches.
+//! in the known set for its schema, and the schema_version is supported.
+//! `load_voice` returns a `VoiceProfile` enum; callers pattern-match on
+//! `V1` vs `V2`.
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
@@ -14,8 +22,26 @@ use std::path::{Path, PathBuf};
 
 use crate::paths;
 
+/// Legacy single-schema constant. Kept as the `V1` value for callers
+/// that haven't migrated to `KNOWN_RECIPES_V1` yet. New code should
+/// use the V1/V2 split.
+#[allow(dead_code)]
 pub const VOICE_SCHEMA_VERSION: u32 = 1;
-pub const KNOWN_RECIPES: &[&str] = &["gpt-sovits-v2-multi-aux-ref"];
+
+/// Recipes valid under schema_version=1 (legacy GPT-SoVITS path). A
+/// future GPT-SoVITS variant could land here without bumping the
+/// schema version.
+pub const KNOWN_RECIPES_V1: &[&str] = &["gpt-sovits-v2-multi-aux-ref"];
+
+/// Recipes valid under schema_version=2 (fish-speech path, v0.4 default).
+/// Consumed by `load_voice` once the V2 branch lights up in PR-C C-1b.
+#[allow(dead_code)]
+pub const KNOWN_RECIPES_V2: &[&str] = &["fish-speech-s2-pro"];
+
+/// Backward-compatibility alias. PR-C-a callers (tests + future
+/// `voiceforge voices migrate` PR-C-b) use the V1/V2 split directly.
+#[allow(dead_code)]
+pub const KNOWN_RECIPES: &[&str] = KNOWN_RECIPES_V1;
 pub const RESERVED_NAMES: &[&str] = &[
     "presets",
     "cache",
@@ -25,9 +51,13 @@ pub const RESERVED_NAMES: &[&str] = &[
     "logs",
 ];
 
+/// Schema-1 voice profile (GPT-SoVITS, gpt-sovits-v2-multi-aux-ref).
+/// Renamed from the pre-PR-C `VoiceProfile` struct; on-disk layout
+/// unchanged. Existing v1 voices on user disks load through this
+/// variant unchanged.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct VoiceProfile {
-    pub schema_version: u32,
+pub struct VoiceProfileV1 {
+    pub schema_version: u32, // == 1
     pub name: String,
     pub source: String,
     /// Required: feeds the cloning cache key. Defaulting it would make
@@ -35,7 +65,7 @@ pub struct VoiceProfile {
     /// cache entry, breaking `--force` invalidation.
     pub created_at: String,
     pub duration_seconds: f64,
-    pub recipe: String,
+    pub recipe: String, // in KNOWN_RECIPES_V1
     pub aux_count: usize,
     #[serde(skip)]
     pub dir: PathBuf,
@@ -47,6 +77,107 @@ pub struct VoiceProfile {
     pub aux_wavs: Vec<PathBuf>,
     #[serde(skip)]
     pub aux_txts: Vec<PathBuf>,
+}
+
+/// Schema-2 voice profile (fish-speech S2 Pro). Single 8-30s reference
+/// clip + transcript; no aux files. Lit up in C-1b — this struct is
+/// defined now so `enum VoiceProfile` stays exhaustive across the
+/// C-1a/C-1b split, but `load_voice` rejects schema=2 in C-1a until
+/// C-1b's branch lands.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[allow(dead_code)] // wired in C-1b
+pub struct VoiceProfileV2 {
+    pub schema_version: u32, // == 2
+    pub name: String,
+    pub source: String,
+    pub created_at: String,
+    pub duration_seconds: f64,
+    pub recipe: String, // in KNOWN_RECIPES_V2
+    #[serde(skip)]
+    pub dir: PathBuf,
+    #[serde(skip)]
+    pub ref_wav: PathBuf,
+    #[serde(skip)]
+    pub ref_txt: PathBuf,
+}
+
+/// Schema-discriminated voice profile. Built in-memory by `load_voice`
+/// after peeking `schema_version` from the on-disk profile.toml; the
+/// outer enum does NOT derive Deserialize (each variant deserializes
+/// independently).
+#[derive(Debug, Clone, PartialEq)]
+pub enum VoiceProfile {
+    V1(VoiceProfileV1),
+    /// Lit up in C-1b. Until then, `load_voice` returns
+    /// `unknown schema_version` for schema=2 markers.
+    #[allow(dead_code)]
+    V2(VoiceProfileV2),
+}
+
+impl VoiceProfile {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::V1(v) => &v.name,
+            Self::V2(v) => &v.name,
+        }
+    }
+
+    pub fn source(&self) -> &str {
+        match self {
+            Self::V1(v) => &v.source,
+            Self::V2(v) => &v.source,
+        }
+    }
+
+    pub fn created_at(&self) -> &str {
+        match self {
+            Self::V1(v) => &v.created_at,
+            Self::V2(v) => &v.created_at,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn dir(&self) -> &Path {
+        match self {
+            Self::V1(v) => &v.dir,
+            Self::V2(v) => &v.dir,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn recipe(&self) -> &str {
+        match self {
+            Self::V1(v) => &v.recipe,
+            Self::V2(v) => &v.recipe,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn schema_version(&self) -> u32 {
+        match self {
+            Self::V1(_) => 1,
+            Self::V2(_) => 2,
+        }
+    }
+}
+
+/// Probe just `schema_version` from a profile.toml so `load_voice` can
+/// dispatch to the right variant without serde tripping on missing
+/// fields. Mirrors `install_cloning::peek_schema_version`.
+fn peek_voice_schema_version(raw: &str, path: &Path) -> Result<u32> {
+    #[derive(Deserialize)]
+    struct Probe {
+        schema_version: u32,
+    }
+    let probe: Probe = toml::from_str(raw).with_context(|| {
+        let preview: String = raw.chars().take(80).collect();
+        format!(
+            "reading schema_version from {} ({} bytes; first 80 chars: {preview:?})",
+            path.display(),
+            raw.len(),
+        )
+    })?;
+    Ok(probe.schema_version)
 }
 
 pub fn voices_dir() -> Option<PathBuf> {
@@ -122,22 +253,35 @@ pub fn load_voice(name: &str) -> Result<VoiceProfile> {
     let profile_path = canonical.join("profile.toml");
     let raw = std::fs::read_to_string(&profile_path)
         .with_context(|| format!("reading {}", profile_path.display()))?;
+    let schema = peek_voice_schema_version(&raw, &profile_path)?;
 
-    let mut profile: VoiceProfile =
-        toml::from_str(&raw).with_context(|| format!("parsing {}", profile_path.display()))?;
-
-    if profile.schema_version != VOICE_SCHEMA_VERSION {
-        bail!(
-            "voice {name:?} profile.toml schema_version={} but this voiceforge expects {} — re-clone",
-            profile.schema_version,
-            VOICE_SCHEMA_VERSION
-        );
+    match schema {
+        1 => load_voice_v1(name, &raw, &profile_path, canonical),
+        2 => bail!(
+            "voice {name:?} profile.toml schema_version=2 (fish-speech) — \
+             V2 load path lit up in PR-C C-1b; not yet wired in this build."
+        ),
+        other => bail!(
+            "voice {name:?} profile.toml schema_version={other} unsupported \
+             (this build knows: 1, 2). Re-clone or check for typo."
+        ),
     }
-    if !KNOWN_RECIPES.contains(&profile.recipe.as_str()) {
+}
+
+fn load_voice_v1(
+    name: &str,
+    raw: &str,
+    profile_path: &Path,
+    canonical: PathBuf,
+) -> Result<VoiceProfile> {
+    let mut profile: VoiceProfileV1 =
+        toml::from_str(raw).with_context(|| format!("parsing {}", profile_path.display()))?;
+
+    if !KNOWN_RECIPES_V1.contains(&profile.recipe.as_str()) {
         bail!(
-            "voice {name:?} uses unknown recipe {:?}; known: {:?}",
+            "voice {name:?} schema=1 but recipe {:?} not in KNOWN_RECIPES_V1 ({:?})",
             profile.recipe,
-            KNOWN_RECIPES
+            KNOWN_RECIPES_V1
         );
     }
 
@@ -160,7 +304,7 @@ pub fn load_voice(name: &str) -> Result<VoiceProfile> {
         assert_path_exists(p, &format!("aux_{}.txt", i + 1))?;
     }
 
-    Ok(profile)
+    Ok(VoiceProfile::V1(profile))
 }
 
 fn assert_path_exists(p: &Path, label: &str) -> Result<()> {
@@ -215,7 +359,7 @@ pub fn list_cloned_voices() -> Result<Vec<VoiceProfile>> {
             }
         }
     }
-    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out.sort_by(|a, b| a.name().cmp(b.name()));
     Ok(out)
 }
 
@@ -367,11 +511,17 @@ aux_count = 5
         with_home(tmp.path(), |home| {
             write_full_profile(home, "peter", "gpt-sovits-v2-multi-aux-ref");
             let v = load_voice("peter").unwrap();
-            assert_eq!(v.name, "peter");
-            assert_eq!(v.recipe, "gpt-sovits-v2-multi-aux-ref");
-            assert_eq!(v.aux_count, 5);
-            assert_eq!(v.aux_wavs.len(), 5);
-            assert!(v.ref_main_wav.is_file());
+            assert_eq!(v.name(), "peter");
+            assert_eq!(v.recipe(), "gpt-sovits-v2-multi-aux-ref");
+            assert_eq!(v.schema_version(), 1);
+            // Drill into the V1 variant for V1-specific field assertions.
+            let v1 = match v {
+                VoiceProfile::V1(v1) => v1,
+                VoiceProfile::V2(_) => panic!("expected V1 variant"),
+            };
+            assert_eq!(v1.aux_count, 5);
+            assert_eq!(v1.aux_wavs.len(), 5);
+            assert!(v1.ref_main_wav.is_file());
         });
     }
 
@@ -396,7 +546,75 @@ aux_count = 5
             write_full_profile(home, "peter", "future-bigger-better-recipe");
             let err = load_voice("peter").unwrap_err();
             let msg = format!("{err:#}");
-            assert!(msg.contains("unknown recipe"), "got: {msg}");
+            assert!(
+                msg.contains("KNOWN_RECIPES_V1") || msg.contains("unknown recipe"),
+                "got: {msg}"
+            );
+        });
+    }
+
+    /// PR-C C-1a regression net: a profile.toml with an unsupported
+    /// schema_version (not 1, not 2) must bail loud with a hint at
+    /// the known schemas, NOT silently load it as v1.
+    #[test]
+    #[serial]
+    fn load_voice_rejects_unknown_schema_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), |home| {
+            let dir = home.join("voices/peter");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("profile.toml"),
+                r#"
+schema_version = 99
+name = "peter"
+source = "stub"
+created_at = "2026-05-12T00:00:00Z"
+duration_seconds = 12.5
+recipe = "gpt-sovits-v2-multi-aux-ref"
+aux_count = 5
+"#,
+            )
+            .unwrap();
+            let err = load_voice("peter").unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("schema_version=99") && msg.contains("unsupported"),
+                "expected schema-99 unsupported error, got: {msg}"
+            );
+        });
+    }
+
+    /// PR-C C-1a: schema_version=2 profiles are recognized at the
+    /// peek+dispatch layer but NOT yet loadable in this commit (V2
+    /// branch lit up in C-1b). Until C-1b, schema=2 must bail with a
+    /// clear "lit up in C-1b" message rather than silently misroute
+    /// to the V1 loader.
+    #[test]
+    #[serial]
+    fn load_voice_rejects_schema_v2_until_c_1b() {
+        let tmp = tempfile::tempdir().unwrap();
+        with_home(tmp.path(), |home| {
+            let dir = home.join("voices/peter");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("profile.toml"),
+                r#"
+schema_version = 2
+name = "peter"
+source = "stub"
+created_at = "2026-05-12T00:00:00Z"
+duration_seconds = 12.5
+recipe = "fish-speech-s2-pro"
+"#,
+            )
+            .unwrap();
+            let err = load_voice("peter").unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("schema_version=2") || msg.contains("fish-speech"),
+                "expected v2-not-yet-wired error, got: {msg}"
+            );
         });
     }
 
@@ -495,7 +713,7 @@ aux_count = 5
             std::fs::write(home.join("voices/broken/junk"), b"x").unwrap();
 
             let voices = list_cloned_voices().expect("list");
-            let names: Vec<&str> = voices.iter().map(|v| v.name.as_str()).collect();
+            let names: Vec<&str> = voices.iter().map(|v| v.name()).collect();
             assert_eq!(names, vec!["peter"], "broken voice should be skipped");
         });
     }
@@ -510,7 +728,7 @@ aux_count = 5
             std::fs::create_dir_all(home.join("voices/peter.partial")).unwrap();
 
             let voices = list_cloned_voices().expect("list");
-            let names: Vec<&str> = voices.iter().map(|v| v.name.as_str()).collect();
+            let names: Vec<&str> = voices.iter().map(|v| v.name()).collect();
             assert_eq!(names, vec!["peter"]);
         });
     }
