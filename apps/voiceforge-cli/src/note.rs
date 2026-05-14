@@ -820,6 +820,122 @@ pub fn write_silent_wav_44100_mono(path: &Path, samples: u32) -> Result<()> {
     Ok(())
 }
 
+// ============================================================================
+// PR-D D-4: per-chunk format verify + ffmpeg concat
+// ============================================================================
+//
+// `-c copy` concat-demuxer is sample-accurate only when every input has
+// identical codec/SR/channels. Per rust-expert S1 we verify each chunk's
+// hound spec BEFORE writing the concat list, bailing on mismatch with
+// a clear pointer at the bad chunk.
+
+pub const REQUIRED_SAMPLE_RATE: u32 = 44_100;
+pub const REQUIRED_CHANNELS: u16 = 1;
+pub const REQUIRED_BITS_PER_SAMPLE: u16 = 16;
+
+/// Open each `chunk_NNNN.wav` in `chunks_dir` (for indices 0..total)
+/// and assert the spec is `{1, 44100, 16, Int}`. Bails on first
+/// mismatch with the offending path + actual spec in the message.
+pub fn verify_chunk_formats(chunks_dir: &Path, total: usize) -> Result<()> {
+    for i in 0..total {
+        let path = chunk_wav_path(chunks_dir, i);
+        let reader = hound::WavReader::open(&path)
+            .with_context(|| format!("opening {} for spec check", path.display()))?;
+        let spec = reader.spec();
+        let ok = spec.channels == REQUIRED_CHANNELS
+            && spec.sample_rate == REQUIRED_SAMPLE_RATE
+            && spec.bits_per_sample == REQUIRED_BITS_PER_SAMPLE
+            && spec.sample_format == hound::SampleFormat::Int;
+        if !ok {
+            bail!(
+                "chunk {} at {} has spec {:?} (channels={}, sample_rate={}, bits_per_sample={}, sample_format={:?}); \
+                 expected channels=1, sample_rate=44100, bits_per_sample=16, sample_format=Int. \
+                 Re-run with --force to re-synth the chunk.",
+                i,
+                path.display(),
+                spec,
+                spec.channels,
+                spec.sample_rate,
+                spec.bits_per_sample,
+                spec.sample_format,
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Write `<chunks_dir>/concat_list.txt` with relative entries:
+///   file 'chunk_0000.wav'
+///   file 'chunk_0001.wav'
+/// All filenames are hard-coded `chunk_{:04}.wav` literals — no
+/// user-controlled string enters the file (rust-expert B5 safe-by-
+/// construction).
+pub fn write_concat_list(chunks_dir: &Path, total: usize) -> Result<PathBuf> {
+    let mut body = String::with_capacity(total * 24);
+    for i in 0..total {
+        body.push_str(&format!("file 'chunk_{i:04}.wav'\n"));
+    }
+    let path = chunks_dir.join("concat_list.txt");
+    std::fs::write(&path, &body).with_context(|| format!("writing {}", path.display()))?;
+    Ok(path)
+}
+
+/// Run the pinned ffmpeg from `InstallStateV2::ffmpeg6_prefix` to
+/// concat the chunk WAVs into `out`. Uses the demuxer with `-c copy`
+/// — no re-encode. Caller is responsible for having already verified
+/// per-chunk formats via `verify_chunk_formats`.
+pub async fn run_ffmpeg_concat(ffmpeg_bin: &Path, concat_list: &Path, out: &Path) -> Result<()> {
+    let status = tokio::process::Command::new(ffmpeg_bin)
+        .arg("-hide_banner")
+        .arg("-loglevel")
+        .arg("error")
+        .arg("-y")
+        .arg("-f")
+        .arg("concat")
+        .arg("-safe")
+        .arg("0")
+        .arg("-i")
+        .arg(concat_list)
+        .arg("-c")
+        .arg("copy")
+        .arg(out)
+        .status()
+        .await
+        .with_context(|| format!("spawning ffmpeg at {}", ffmpeg_bin.display()))?;
+    if !status.success() {
+        bail!(
+            "ffmpeg concat failed (exit {:?}). Try --force to re-synth all chunks, \
+             or inspect {} for diagnostics.",
+            status.code(),
+            concat_list.parent().unwrap_or(Path::new(".")).display()
+        );
+    }
+    Ok(())
+}
+
+/// Final wrap: verify every chunk's format, write the concat list,
+/// run ffmpeg. Used by `run` (D-5) after `synth_all_chunks` returns.
+pub async fn concat_chunks(
+    chunks_dir: &Path,
+    total_chunks: usize,
+    out: &Path,
+    ffmpeg_bin: &Path,
+) -> Result<()> {
+    verify_chunk_formats(chunks_dir, total_chunks)?;
+    let list = write_concat_list(chunks_dir, total_chunks)?;
+    run_ffmpeg_concat(ffmpeg_bin, &list, out).await
+}
+
+/// Locate the pinned ffmpeg binary from `InstallStateV2`. Returns a
+/// path that may or may not exist; callers should verify before use.
+/// On absent install marker, returns an error pointing at
+/// `voiceforge install-cloning`.
+pub fn pinned_ffmpeg_path() -> Result<PathBuf> {
+    let state = crate::install_cloning::read_install_state_v2()
+        .context("could not read v2 install state. Run `voiceforge install-cloning` first.")?;
+    Ok(PathBuf::from(state.ffmpeg6_prefix).join("bin/ffmpeg"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1527,5 +1643,122 @@ mod tests {
         let msg = v1_voice_bail_message("peter");
         assert!(msg.contains("voiceforge voices migrate peter"));
         assert!(msg.contains("schema 1"));
+    }
+
+    // ----- D-4: per-chunk format verify + concat list ----------------
+
+    // Plan test #23 (rust-expert nit-7 parametrized): four sibling tests
+    // each vary one axis of the WAV spec. All four must bail with a
+    // message naming the offending chunk.
+    fn write_wav_with_spec(path: &Path, spec: hound::WavSpec, samples: u32) {
+        let mut w = hound::WavWriter::create(path, spec).unwrap();
+        for _ in 0..samples {
+            // Sample type depends on the spec; for bps=16 Int we
+            // write i16. For other variants we still write i16 (hound
+            // will write the right encoding for the spec).
+            if spec.sample_format == hound::SampleFormat::Int && spec.bits_per_sample == 16 {
+                w.write_sample(0i16).unwrap();
+            } else if spec.sample_format == hound::SampleFormat::Int && spec.bits_per_sample == 24 {
+                w.write_sample(0i32).unwrap();
+            } else if spec.sample_format == hound::SampleFormat::Float {
+                w.write_sample(0.0f32).unwrap();
+            } else {
+                w.write_sample(0i16).unwrap();
+            }
+        }
+        w.finalize().unwrap();
+    }
+
+    #[test]
+    fn verify_chunk_formats_bails_on_channels_mismatch() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_wav_with_spec(
+            &chunk_wav_path(tmp.path(), 0),
+            hound::WavSpec {
+                channels: 2,
+                sample_rate: 44_100,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+            100,
+        );
+        let err = verify_chunk_formats(tmp.path(), 1).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("channels=2"), "got: {msg}");
+        assert!(msg.contains("chunk 0"));
+    }
+
+    #[test]
+    fn verify_chunk_formats_bails_on_sample_rate_mismatch() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_wav_with_spec(
+            &chunk_wav_path(tmp.path(), 0),
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 32_000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+            100,
+        );
+        let err = verify_chunk_formats(tmp.path(), 1).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("sample_rate=32000"), "got: {msg}");
+    }
+
+    #[test]
+    fn verify_chunk_formats_bails_on_bits_per_sample_mismatch() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_wav_with_spec(
+            &chunk_wav_path(tmp.path(), 0),
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 44_100,
+                bits_per_sample: 24,
+                sample_format: hound::SampleFormat::Int,
+            },
+            100,
+        );
+        let err = verify_chunk_formats(tmp.path(), 1).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("bits_per_sample=24"), "got: {msg}");
+    }
+
+    #[test]
+    fn verify_chunk_formats_bails_on_sample_format_mismatch() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_wav_with_spec(
+            &chunk_wav_path(tmp.path(), 0),
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 44_100,
+                bits_per_sample: 32,
+                sample_format: hound::SampleFormat::Float,
+            },
+            100,
+        );
+        let err = verify_chunk_formats(tmp.path(), 1).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("Float"), "got: {msg}");
+    }
+
+    #[test]
+    fn verify_chunk_formats_accepts_canonical_44100_mono_pcm16() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_silent_wav_44100_mono(&chunk_wav_path(tmp.path(), 0), 100).unwrap();
+        write_silent_wav_44100_mono(&chunk_wav_path(tmp.path(), 1), 100).unwrap();
+        verify_chunk_formats(tmp.path(), 2).unwrap();
+    }
+
+    #[test]
+    fn write_concat_list_uses_relative_filenames() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = write_concat_list(tmp.path(), 3).unwrap();
+        let body = std::fs::read_to_string(&p).unwrap();
+        // No absolute paths — only relative `chunk_NNNN.wav` literals.
+        assert!(!body.contains(tmp.path().to_string_lossy().as_ref()));
+        assert!(body.contains("file 'chunk_0000.wav'"));
+        assert!(body.contains("file 'chunk_0001.wav'"));
+        assert!(body.contains("file 'chunk_0002.wav'"));
     }
 }
