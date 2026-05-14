@@ -1898,4 +1898,71 @@ mod tests {
         let p = progress_path_for(Path::new("/tmp/note.wav"));
         assert_eq!(p, Path::new("/tmp/note.wav.progress.json"));
     }
+
+    // ----- D-6 + rust-expert R3: partial-resume-of-partial-resume ----
+
+    /// The load-bearing soundness claim: a render that's killed
+    /// mid-flight resumes correctly, even if that resume is itself
+    /// killed mid-flight. We simulate "kill" via MockSynth's
+    /// `fail_after` field, which returns `Err` on the Nth call.
+    ///
+    /// Pipeline: 5 paragraphs -> 5 chunks.
+    /// Run 1: MockSynth fails on call 3 -> chunks 0,1 written.
+    /// Run 2: MockSynth fails on call 3 (= chunk 4 overall) ->
+    ///         chunks 2,3 written; chunk 4 errors.
+    /// Run 3: clean MockSynth -> chunk 4 written.
+    /// Final: progress.json has 5 completed entries; all WAVs exist.
+    #[tokio::test]
+    async fn note_partial_resume_of_partial_resume_three_run_recovery() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("note.wav");
+        let raw = "a\n\nb\n\nc\n\nd\n\ne";
+        let args = args_with_out(&out);
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        // Run 1: fails on call 3 (after writing chunks 0 and 1).
+        let s1 = MockSynth::with_fail_after(3);
+        let err1 = synth_all_chunks(&s1, &voice_meta(), raw, false, &args, cancel.clone())
+            .await
+            .unwrap_err();
+        assert!(format!("{err1:#}").contains("simulated synth failure"));
+        let chunks_dir = chunks_dir_for(&out);
+        assert!(chunks_dir.join("chunk_0000.wav").is_file());
+        assert!(chunks_dir.join("chunk_0001.wav").is_file());
+        assert!(!chunks_dir.join("chunk_0002.wav").exists());
+        let raw_json = std::fs::read_to_string(progress_path_for(&out)).unwrap();
+        let p1: ProgressJson = serde_json::from_str(&raw_json).unwrap();
+        assert_eq!(p1.completed.len(), 2);
+
+        // Run 2: fails on call 3 (= chunk 4 — counter is per-instance).
+        // Should skip 0,1 (done) and write 2,3 before failing.
+        let s2 = MockSynth::with_fail_after(3);
+        let err2 = synth_all_chunks(&s2, &voice_meta(), raw, false, &args, cancel.clone())
+            .await
+            .unwrap_err();
+        assert!(format!("{err2:#}").contains("simulated synth failure"));
+        assert!(chunks_dir.join("chunk_0002.wav").is_file());
+        assert!(chunks_dir.join("chunk_0003.wav").is_file());
+        assert!(!chunks_dir.join("chunk_0004.wav").exists());
+        let raw_json = std::fs::read_to_string(progress_path_for(&out)).unwrap();
+        let p2: ProgressJson = serde_json::from_str(&raw_json).unwrap();
+        assert_eq!(p2.completed.len(), 4);
+
+        // Run 3: clean synth finishes the last chunk.
+        let s3 = MockSynth::new();
+        let r3 = synth_all_chunks(&s3, &voice_meta(), raw, false, &args, cancel)
+            .await
+            .expect("third run should complete");
+        assert_eq!(s3.call_count(), 1, "should only re-synth chunk 4");
+        assert_eq!(r3.synthesized, vec![4]);
+        assert_eq!(r3.skipped, vec![0, 1, 2, 3]);
+        assert!(chunks_dir.join("chunk_0004.wav").is_file());
+        let raw_json = std::fs::read_to_string(progress_path_for(&out)).unwrap();
+        let pfinal: ProgressJson = serde_json::from_str(&raw_json).unwrap();
+        assert_eq!(pfinal.completed.len(), 5);
+        for i in 0..5 {
+            assert_eq!(pfinal.completed[i].index, i);
+            assert!(pfinal.completed[i].wav_path.is_file());
+        }
+    }
 }
