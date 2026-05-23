@@ -148,6 +148,10 @@ fn strip_markdown(raw: &str) -> String {
     let parser = Parser::new(raw);
 
     for event in parser {
+        // True iff we're inside a span whose content should NOT be narrated
+        // (fenced code blocks, image alt text). Recomputed per-event so the
+        // depth-counter updates take effect immediately.
+        let drop = in_codeblock_depth > 0 || in_image_depth > 0;
         match event {
             Event::Start(Tag::CodeBlock(_)) => in_codeblock_depth += 1,
             Event::End(TagEnd::CodeBlock) => {
@@ -160,28 +164,16 @@ fn strip_markdown(raw: &str) -> String {
                 // we don't narrate a raw filename.
                 in_image_depth = in_image_depth.saturating_sub(1);
             }
-            Event::Text(t) | Event::Code(t) => {
-                if in_codeblock_depth == 0 && in_image_depth == 0 {
-                    out.push_str(&t);
-                }
-            }
-            Event::SoftBreak => {
-                if in_codeblock_depth == 0 && in_image_depth == 0 {
-                    out.push(' ');
-                }
-            }
-            Event::HardBreak => {
-                if in_codeblock_depth == 0 && in_image_depth == 0 {
-                    out.push('\n');
-                }
-            }
+            Event::Text(t) | Event::Code(t) if !drop => out.push_str(&t),
+            Event::SoftBreak if !drop => out.push(' '),
+            Event::HardBreak if !drop => out.push('\n'),
             Event::End(TagEnd::Paragraph)
             | Event::End(TagEnd::Heading(_))
             | Event::End(TagEnd::BlockQuote)
-            | Event::End(TagEnd::Item) => {
-                if in_codeblock_depth == 0 && in_image_depth == 0 {
-                    out.push_str("\n\n");
-                }
+            | Event::End(TagEnd::Item)
+                if !drop =>
+            {
+                out.push_str("\n\n")
             }
             _ => {}
         }
