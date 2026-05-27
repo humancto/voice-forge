@@ -1,39 +1,105 @@
-//! Embedded install assets (ROADMAP v0.4 PR-AB step 4).
+//! Embedded runtime assets — install scripts, clone scripts, synth
+//! workers, and the post-install smoke fixture — bundled directly
+//! into the `voiceforge` binary via `include_bytes!` / `include_str!`.
 //!
-//! Bundles `scripts/install_cloning_fish.sh` and the smoke test
-//! fixture directly into the compiled `voiceforge` binary via
-//! `include_str!` / `include_bytes!`. Without this, brew + curl
-//! installs of the binary have no sibling `scripts/` dir, and
-//! `voiceforge install-cloning` always dies with "could not locate
-//! scripts/install_cloning.sh" — the onboarding-audit's S1 finding.
+//! Without this, brew + curl installs of the binary have no sibling
+//! `scripts/` dir, and three user-facing commands die immediately:
+//!   - `voiceforge install-cloning` (cannot find install_cloning_*.sh)
+//!   - `voiceforge clone <name> <src>` (cannot find clone_voice_*.sh)
+//!   - `voiceforge say --voice <cloned-voice>` (cannot find the
+//!     {fish_speech_synth,cloning_synth}.py worker)
 //!
-//! On invocation we extract the script to
-//! `~/.voiceforge/cloning/.install/install_cloning_fish.sh` (mode
-//! 0700) and shell out to it. Smoke fixture extracts the same way
-//! to `~/.voiceforge/cloning/.install/smoke_reference_8s.{wav,txt}`.
+//! `resolve_runtime_script(name)` is the single resolver:
 //!
-//! Both extracts are idempotent — re-running install reuses the
-//! files. The `.install/` subdirectory is .gitignore'd at the user
-//! HOME level so it's not accidentally committed in dev setups.
+//! 1. If we're running from a source checkout (the test workspace, or
+//!    `cargo run` from the repo), prefer `<repo>/scripts/<name>` so
+//!    edits to scripts/foo.sh take effect without a rebuild.
+//! 2. Otherwise extract the embedded copy to
+//!    `~/.voiceforge/cloning/.install/<name>` (mode 0700 on the dir,
+//!    0755 on .sh/.py, 0644 on fixtures) and return the extracted
+//!    path. Idempotent via sha256-skip in `write_if_changed`.
 //!
-//! `#[allow(dead_code)]` is applied at the module level until PR-AB
-//! step 6 wires `install_cloning::run()` through `extract_all()`.
+//! Sha256s of the embedded payloads are pinned at build time by
+//! `build.rs` (see `$OUT_DIR/embedded_sha.rs`). Source of truth is
+//! the file content on disk; the generated constants exist only so
+//! the runtime can sanity-check the payload it bundled.
+//!
+//! NOTE: `include_bytes!("../../../scripts/foo.sh")` reaches outside
+//! the crate root. The voiceforge-cli crate is workspace-only and
+//! ships via GitHub releases / Homebrew; it is NOT published to
+//! crates.io. If that ever changes, move scripts/ under
+//! `apps/voiceforge-cli/scripts/` or use `[package] include = [...]`
+//! before publishing.
 
-#![allow(dead_code)]
-
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use std::path::PathBuf;
 
-/// The fish-speech install script. Content is filled in by PR-AB
-/// step 6 (which writes `scripts/install_cloning_fish.sh`); for now
-/// this is a placeholder that errors loud if invoked. The constant
-/// itself is real and used by tests + the extraction helper today
-/// so the wiring works end-to-end before step 6 lands.
+// Build-time sha256s. See build.rs.
+include!(concat!(env!("OUT_DIR"), "/embedded_sha.rs"));
+
+/// Each embedded runtime script is described by one row of this
+/// table. Order doesn't matter functionally; keep alphabetical for
+/// reviewability.
+pub struct EmbeddedScript {
+    pub name: &'static str,
+    pub bytes: &'static [u8],
+    pub mode: u32,
+    /// Build-time sha256 of `bytes` (pinned by build.rs). Asserted
+    /// against the runtime byte digest in `embedded_sha_matches_payload`.
+    #[allow(dead_code)] // read by tests; lookup-time integrity check is optional.
+    pub sha256_hex: &'static str,
+}
+
+/// Every script the released binary needs at runtime. Kept in
+/// lockstep with build.rs::SCRIPTS — if you add an entry here, add
+/// the matching (file_name, const_suffix) pair there and rebuild.
+pub const EMBEDDED_RUNTIME_SCRIPTS: &[EmbeddedScript] = &[
+    EmbeddedScript {
+        name: "clone_voice.sh",
+        bytes: include_bytes!("../../../scripts/clone_voice.sh"),
+        mode: 0o755,
+        sha256_hex: SHA_CLONE_VOICE_SH,
+    },
+    EmbeddedScript {
+        name: "clone_voice_fish.sh",
+        bytes: include_bytes!("../../../scripts/clone_voice_fish.sh"),
+        mode: 0o755,
+        sha256_hex: SHA_CLONE_VOICE_FISH_SH,
+    },
+    EmbeddedScript {
+        name: "cloning_synth.py",
+        bytes: include_bytes!("../../../scripts/cloning_synth.py"),
+        mode: 0o755,
+        sha256_hex: SHA_CLONING_SYNTH_PY,
+    },
+    EmbeddedScript {
+        name: "fish_speech_synth.py",
+        bytes: include_bytes!("../../../scripts/fish_speech_synth.py"),
+        mode: 0o755,
+        sha256_hex: SHA_FISH_SPEECH_SYNTH_PY,
+    },
+    EmbeddedScript {
+        name: "install_cloning.sh",
+        bytes: include_bytes!("../../../scripts/install_cloning.sh"),
+        mode: 0o755,
+        sha256_hex: SHA_INSTALL_CLONING_SH,
+    },
+    EmbeddedScript {
+        name: "install_cloning_fish.sh",
+        bytes: include_bytes!("../../../scripts/install_cloning_fish.sh"),
+        mode: 0o755,
+        sha256_hex: SHA_INSTALL_CLONING_FISH_SH,
+    },
+];
+
+/// Compat shim — tests pull the fish install script via this
+/// constant. Identical payload to the registry entry. New code
+/// should use `resolve_runtime_script("install_cloning_fish.sh")`.
+#[allow(dead_code)]
 pub const INSTALL_CLONING_FISH_SH: &str = include_str!("../../../scripts/install_cloning_fish.sh");
 
 /// 8-second public-domain LibriVox reference clip used by the
 /// post-install smoke test. mono 32 kHz, loudnorm'd to -16 LUFS.
-/// Filled in by PR-AB step 6.
 pub const SMOKE_REFERENCE_WAV: &[u8] =
     include_bytes!("../../../tests/fixtures/smoke_reference_8s.wav");
 
@@ -50,14 +116,53 @@ pub fn extract_dir() -> Result<PathBuf> {
     Ok(home.join("cloning").join(".install"))
 }
 
-/// Extract every embedded asset to `extract_dir()`. Mode 0700 on
-/// the directory + 0755 on the script + 0644 on the fixtures.
+/// The single resolver for runtime scripts (install / clone / synth).
 ///
-/// Idempotent: existing files with matching sha256 are left alone.
-/// Mismatched sha256 triggers an overwrite (e.g., user upgraded
-/// voiceforge and the embedded script changed).
-pub fn extract_all() -> Result<ExtractedAssets> {
-    use std::io::Write;
+/// Resolution order:
+///   1. **Source checkout** — if `paths::repo_config_dir()` finds a
+///      `configs/` ancestor and that ancestor has a `scripts/<name>`
+///      file, return that path. Lets `cargo run` / `cargo test` users
+///      edit `scripts/foo.sh` and re-run without a rebuild.
+///   2. **Embedded extraction** — look `name` up in
+///      `EMBEDDED_RUNTIME_SCRIPTS`, extract via `write_if_changed`
+///      into `extract_dir()`, return the extracted path.
+///
+/// Returns an error only when the name is not in the registry AND
+/// not on disk in a source checkout. That should be a packaging bug
+/// (someone added a `scripts/foo.sh` caller without updating the
+/// registry + build.rs).
+pub fn resolve_runtime_script(name: &str) -> Result<PathBuf> {
+    resolve_runtime_script_with_repo_lookup(name, crate::paths::repo_config_dir)
+}
+
+/// Test seam: lets the unit tests inject a `|| None` repo-lookup to
+/// simulate a release-binary install (no source checkout reachable).
+/// The public entry point is `resolve_runtime_script`.
+pub fn resolve_runtime_script_with_repo_lookup<F: FnOnce() -> Option<PathBuf>>(
+    name: &str,
+    repo_lookup: F,
+) -> Result<PathBuf> {
+    // 1. Source-checkout precedence (devs editing scripts/foo.sh).
+    if let Some(repo_configs) = repo_lookup() {
+        if let Some(repo) = repo_configs.parent() {
+            let candidate = repo.join("scripts").join(name);
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+    }
+
+    // 2. Embedded extraction. The released binary always lands here.
+    let entry = EMBEDDED_RUNTIME_SCRIPTS
+        .iter()
+        .find(|e| e.name == name)
+        .ok_or_else(|| {
+            anyhow!(
+                "scripts/{name} is not embedded and not present in a source checkout. \
+                 This is a voiceforge packaging bug — please file an issue with the \
+                 output of `voiceforge doctor`."
+            )
+        })?;
 
     let dir = extract_dir()?;
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -66,12 +171,43 @@ pub fn extract_all() -> Result<ExtractedAssets> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
     }
+    let path = dir.join(entry.name);
+    write_if_changed(&path, entry.bytes, entry.mode)?;
+    Ok(path)
+}
 
+/// Extract every embedded asset to `extract_dir()`. Mode 0700 on
+/// the directory + 0755 on the script + 0644 on the fixtures.
+///
+/// Idempotent: existing files with matching sha256 are left alone.
+/// Mismatched sha256 triggers an overwrite (e.g., user upgraded
+/// voiceforge and the embedded script changed).
+///
+/// Returned struct names only the fish install script + smoke
+/// fixtures — the legacy interface that `install_smoke.rs` consumes.
+/// Other runtime scripts (clone_voice_*, *_synth.py, install_cloning.sh)
+/// are NOT extracted here — they're extracted lazily via
+/// `resolve_runtime_script` when their respective commands run.
+#[allow(dead_code)] // consumed by install_smoke::run_smoke_test_with on the wizard path.
+pub fn extract_all() -> Result<ExtractedAssets> {
+    use std::io::Write;
+
+    // Smoke flow needs a stable extract-dir path for both the script
+    // and the WAV/txt fixtures, regardless of whether a source
+    // checkout is reachable. Bypass `resolve_runtime_script`'s
+    // source-checkout precedence here so the smoke test always works
+    // against the extracted copy.
+    let dir = extract_dir()?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+    }
     let script_path = dir.join("install_cloning_fish.sh");
+    write_if_changed(&script_path, INSTALL_CLONING_FISH_SH.as_bytes(), 0o755)?;
     let smoke_wav_path = dir.join("smoke_reference_8s.wav");
     let smoke_txt_path = dir.join("smoke_reference_8s.txt");
-
-    write_if_changed(&script_path, INSTALL_CLONING_FISH_SH.as_bytes(), 0o755)?;
     write_if_changed(&smoke_wav_path, SMOKE_REFERENCE_WAV, 0o644)?;
     write_if_changed(&smoke_txt_path, SMOKE_REFERENCE_TXT.as_bytes(), 0o644)?;
 
@@ -85,6 +221,7 @@ pub fn extract_all() -> Result<ExtractedAssets> {
 
 /// Result of `extract_all`. Caller uses the script_path to shell
 /// out + smoke_*_path to feed the post-install smoke test.
+#[allow(dead_code)] // returned by extract_all; consumed by install_smoke on wizard path.
 #[derive(Debug, Clone)]
 pub struct ExtractedAssets {
     pub script_path: PathBuf,
@@ -317,6 +454,260 @@ mod tests {
         match prev {
             Some(v) => std::env::set_var("VOICEFORGE_HOME", v),
             None => std::env::remove_var("VOICEFORGE_HOME"),
+        }
+    }
+
+    // ========================================================================
+    // v0.4.1 — registry + resolver tests (plan §3)
+    // ========================================================================
+
+    /// Sha256-hex of raw bytes (mirrors build.rs::hex_encode).
+    fn sha256_hex_of(bytes: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(bytes);
+        let d = h.finalize();
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut s = String::with_capacity(d.len() * 2);
+        for b in d.iter() {
+            s.push(HEX[(b >> 4) as usize] as char);
+            s.push(HEX[(b & 0x0f) as usize] as char);
+        }
+        s
+    }
+
+    /// Plan §3 test 1: every entry in the registry extracts and the
+    /// extracted file is byte-identical to the embedded payload with
+    /// the right mode.
+    #[test]
+    #[serial]
+    fn every_embedded_script_extracts() {
+        with_tmp_home(|| {
+            // Use the test seam with `|| None` so we force the
+            // extract path regardless of the workspace state.
+            for entry in EMBEDDED_RUNTIME_SCRIPTS {
+                let path = resolve_runtime_script_with_repo_lookup(entry.name, || None)
+                    .unwrap_or_else(|e| panic!("resolve {}: {e:#}", entry.name));
+                assert!(path.is_file(), "{} missing after resolve", path.display());
+                let actual = std::fs::read(&path).unwrap();
+                assert_eq!(
+                    actual.as_slice(),
+                    entry.bytes,
+                    "extracted bytes for {} do not match embedded payload",
+                    entry.name
+                );
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+                    assert_eq!(
+                        mode & 0o777,
+                        entry.mode,
+                        "{} mode = {:o}, want {:o}",
+                        entry.name,
+                        mode & 0o777,
+                        entry.mode
+                    );
+                }
+            }
+        });
+    }
+
+    /// Plan §3 test 2: the build.rs-generated sha matches the
+    /// embedded payload's runtime sha. Catches a stale-OUT_DIR
+    /// regression where the constants and `include_bytes!` payload
+    /// drift apart.
+    #[test]
+    fn embedded_sha_matches_payload() {
+        for entry in EMBEDDED_RUNTIME_SCRIPTS {
+            let actual = sha256_hex_of(entry.bytes);
+            assert_eq!(
+                actual, entry.sha256_hex,
+                "sha drift for {}: payload={actual} const={}",
+                entry.name, entry.sha256_hex
+            );
+        }
+    }
+
+    /// Plan §3 test 3: second call is a no-op (sha256-skip path).
+    #[test]
+    #[serial]
+    fn resolve_runtime_script_idempotent_on_repeat_call() {
+        with_tmp_home(|| {
+            let first = resolve_runtime_script_with_repo_lookup("install_cloning_fish.sh", || None)
+                .unwrap();
+            let mtime1 = std::fs::metadata(&first).unwrap().modified().unwrap();
+            // Sleep just enough that mtime would tick if rewrite happens.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let second =
+                resolve_runtime_script_with_repo_lookup("install_cloning_fish.sh", || None)
+                    .unwrap();
+            let mtime2 = std::fs::metadata(&second).unwrap().modified().unwrap();
+            assert_eq!(first, second);
+            assert_eq!(
+                mtime1, mtime2,
+                "second resolve rewrote file (mtime changed) — write_if_changed should skip"
+            );
+        });
+    }
+
+    /// Plan §3 test 4: corrupted on-disk payload is restored.
+    #[test]
+    #[serial]
+    fn resolve_runtime_script_overwrites_on_content_drift() {
+        with_tmp_home(|| {
+            let path =
+                resolve_runtime_script_with_repo_lookup("fish_speech_synth.py", || None).unwrap();
+            // Corrupt it.
+            std::fs::write(&path, b"# corrupted by test").unwrap();
+            // Re-resolve.
+            let path2 =
+                resolve_runtime_script_with_repo_lookup("fish_speech_synth.py", || None).unwrap();
+            assert_eq!(path, path2);
+            let actual = std::fs::read(&path2).unwrap();
+            let expected = EMBEDDED_RUNTIME_SCRIPTS
+                .iter()
+                .find(|e| e.name == "fish_speech_synth.py")
+                .unwrap()
+                .bytes;
+            assert_eq!(
+                actual.as_slice(),
+                expected,
+                "drifted bytes were NOT restored on re-resolve"
+            );
+        });
+    }
+
+    /// Plan §3 test 5: unknown name → clear packaging-bug error.
+    #[test]
+    #[serial]
+    fn resolve_runtime_script_rejects_unknown_name() {
+        with_tmp_home(|| {
+            let err =
+                resolve_runtime_script_with_repo_lookup("does_not_exist.sh", || None).unwrap_err();
+            let msg = format!("{err:#}");
+            assert!(msg.contains("does_not_exist.sh"), "got: {msg}");
+            assert!(msg.contains("packaging bug"), "got: {msg}");
+        });
+    }
+
+    /// Plan §3 test 6: source-checkout precedence — when the repo
+    /// lookup finds a `<repo>/scripts/<name>` file, return that path,
+    /// not the extracted one.
+    #[test]
+    #[serial]
+    fn resolve_runtime_script_prefers_source_checkout_over_extract() {
+        let tmp = TempDir::new().unwrap();
+        let fake_repo = tmp.path().join("fake-repo");
+        let fake_scripts = fake_repo.join("scripts");
+        std::fs::create_dir_all(&fake_scripts).unwrap();
+        let fake_script = fake_scripts.join("install_cloning_fish.sh");
+        std::fs::write(
+            &fake_script,
+            b"#!/usr/bin/env bash\n# fake source-checkout copy\n",
+        )
+        .unwrap();
+        // build.rs's repo lookup returns the configs/ dir; the
+        // resolver walks up to its parent and looks for scripts/.
+        let fake_configs = fake_repo.join("configs");
+        std::fs::create_dir_all(&fake_configs).unwrap();
+        let resolved = resolve_runtime_script_with_repo_lookup("install_cloning_fish.sh", || {
+            Some(fake_configs.clone())
+        })
+        .unwrap();
+        assert_eq!(resolved, fake_script);
+        // Content is the fake (NOT the embedded payload) — proves
+        // precedence in fact, not just in path naming.
+        let content = std::fs::read(&resolved).unwrap();
+        assert!(
+            content.starts_with(b"#!/usr/bin/env bash\n# fake"),
+            "resolver returned source-checkout path but content suggests embedded payload was extracted instead"
+        );
+    }
+
+    /// Plan §3 test 7: with no source checkout reachable, extraction
+    /// path wins. This is the smoking-gun test for the v0.4.0 bug —
+    /// proves a fresh `/usr/local/bin/voiceforge` install can find
+    /// the script.
+    #[test]
+    #[serial]
+    fn resolve_runtime_script_falls_back_to_extract_when_no_source_checkout() {
+        with_tmp_home(|| {
+            let path = resolve_runtime_script_with_repo_lookup("install_cloning_fish.sh", || None)
+                .unwrap();
+            // Must land in the extract dir, not anywhere else.
+            let dir = extract_dir().unwrap();
+            assert!(
+                path.starts_with(&dir),
+                "extract_path {} not under {}",
+                path.display(),
+                dir.display()
+            );
+            // And must be byte-identical to the embedded payload.
+            let actual = std::fs::read(&path).unwrap();
+            let expected = EMBEDDED_RUNTIME_SCRIPTS
+                .iter()
+                .find(|e| e.name == "install_cloning_fish.sh")
+                .unwrap()
+                .bytes;
+            assert_eq!(actual.as_slice(), expected);
+        });
+    }
+
+    /// Plan §3 test 8: every embedded script has a sane size floor
+    /// (catches an accidental truncation / placeholder revert).
+    #[test]
+    fn every_embedded_script_min_size() {
+        // Pin floors at ~50% of current sizes; tighten over time.
+        // Current sizes (approx): install_cloning_fish.sh ~17 KB,
+        // install_cloning.sh ~12 KB, clone_voice_fish.sh ~8 KB,
+        // clone_voice.sh ~6 KB, fish_speech_synth.py ~13 KB,
+        // cloning_synth.py ~5 KB.
+        let floors: &[(&str, usize)] = &[
+            ("install_cloning_fish.sh", 8000),
+            ("install_cloning.sh", 6000),
+            ("clone_voice_fish.sh", 4000),
+            ("clone_voice.sh", 3000),
+            ("fish_speech_synth.py", 6000),
+            ("cloning_synth.py", 2500),
+        ];
+        for (name, floor) in floors {
+            let entry = EMBEDDED_RUNTIME_SCRIPTS
+                .iter()
+                .find(|e| e.name == *name)
+                .unwrap_or_else(|| panic!("missing registry entry: {name}"));
+            assert!(
+                entry.bytes.len() >= *floor,
+                "{name} only {} bytes; floor is {floor} — accidental truncation?",
+                entry.bytes.len()
+            );
+        }
+    }
+
+    /// Plan §3 test 9: shell scripts start with the bash shebang,
+    /// python scripts start with the python3 shebang.
+    #[test]
+    fn every_embedded_script_starts_with_correct_shebang() {
+        for entry in EMBEDDED_RUNTIME_SCRIPTS {
+            if entry.name.ends_with(".sh") {
+                assert!(
+                    entry.bytes.starts_with(b"#!/usr/bin/env bash\n")
+                        || entry.bytes.starts_with(b"#!/bin/bash\n"),
+                    "{} missing bash shebang; first 32 bytes: {:?}",
+                    entry.name,
+                    String::from_utf8_lossy(&entry.bytes[..entry.bytes.len().min(32)])
+                );
+            } else if entry.name.ends_with(".py") {
+                assert!(
+                    entry.bytes.starts_with(b"#!/usr/bin/env python3")
+                        || entry.bytes.starts_with(b"#!/usr/bin/env python\n"),
+                    "{} missing python3 shebang; first 32 bytes: {:?}",
+                    entry.name,
+                    String::from_utf8_lossy(&entry.bytes[..entry.bytes.len().min(32)])
+                );
+            } else {
+                panic!("unrecognized extension in registry entry {}", entry.name);
+            }
         }
     }
 }

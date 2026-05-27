@@ -714,11 +714,7 @@ impl CloningEngine {
     async fn spawn_child(&self) -> Result<SynthChild> {
         let python = install_cloning::cloning_venv_python()
             .ok_or_else(|| anyhow!("could not resolve cloning venv python"))?;
-        let script = install_cloning::cloning_synth_script().ok_or_else(|| {
-            anyhow!(
-                "could not locate scripts/cloning_synth.py — install voiceforge from source for now (ROADMAP 1.7 will package it)"
-            )
-        })?;
+        let script = install_cloning::cloning_synth_script()?;
 
         let mut cmd = tokio::process::Command::new(&python);
         cmd.arg(&script)
@@ -1013,11 +1009,7 @@ impl FishEngine {
     async fn spawn_child(&self) -> Result<SynthChild> {
         let python = install_cloning::cloning_venv_python()
             .ok_or_else(|| anyhow!("could not resolve cloning venv python"))?;
-        let script = install_cloning::fish_synth_script().ok_or_else(|| {
-            anyhow!(
-                "could not locate scripts/fish_speech_synth.py — install voiceforge from source for now (binary release packaging lands in PR-AB step 6c.5)"
-            )
-        })?;
+        let script = install_cloning::fish_synth_script()?;
 
         let mut cmd = tokio::process::Command::new(&python);
         cmd.arg(&script)

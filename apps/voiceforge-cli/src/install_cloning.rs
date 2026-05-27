@@ -145,35 +145,16 @@ pub fn cloning_repo_dir() -> Option<PathBuf> {
     paths::user_home().map(|h| h.join("cloning/repo"))
 }
 
-/// Path to the voice-forge-shipped synth worker. The repo's
-/// `scripts/cloning_synth.py` is loaded by the cloning venv's python.
-#[allow(dead_code)]
-pub fn cloning_synth_script() -> Option<PathBuf> {
-    if let Some(repo_configs) = paths::repo_config_dir() {
-        if let Some(repo) = repo_configs.parent() {
-            let candidate = repo.join("scripts/cloning_synth.py");
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
+/// Path to the v1 GPT-SoVITS NDJSON synth worker. Resolves via the
+/// shared embedded-or-source resolver (v0.4.1).
+pub fn cloning_synth_script() -> Result<PathBuf> {
+    crate::embedded_install::resolve_runtime_script("cloning_synth.py")
 }
 
-/// Path to the v2 fish-speech NDJSON worker. Loaded by the cloning
-/// venv's python. Mirrors `cloning_synth_script()` for the fish-speech
-/// path (PR-AB step 7 ships the script; step 8 wires the resolver).
-#[allow(dead_code)]
-pub fn fish_synth_script() -> Option<PathBuf> {
-    if let Some(repo_configs) = paths::repo_config_dir() {
-        if let Some(repo) = repo_configs.parent() {
-            let candidate = repo.join("scripts/fish_speech_synth.py");
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
+/// Path to the v2 fish-speech NDJSON synth worker. Resolves via the
+/// shared embedded-or-source resolver (v0.4.1).
+pub fn fish_synth_script() -> Result<PathBuf> {
+    crate::embedded_install::resolve_runtime_script("fish_speech_synth.py")
 }
 
 /// `true` when a schema-1 (GPT-SoVITS) install is present. Kept as the
@@ -449,26 +430,10 @@ fn days_to_ymd(days_since_epoch: i64) -> (i32, u32, u32) {
     (y as i32, m as u32, d as u32)
 }
 
-/// Resolve a `scripts/<name>` file. Walks up from `CARGO_MANIFEST_DIR`
-/// for source builds, and from `current_exe()` for installed binaries.
-/// Used to find both `install_cloning.sh` (v1) and `install_cloning_fish.sh` (v2).
-fn resolve_script_named(name: &str) -> Result<PathBuf> {
-    if let Some(repo) = paths::repo_config_dir() {
-        // repo_config_dir returns <repo>/configs; we want <repo>.
-        if let Some(parent) = repo.parent() {
-            let candidate = parent.join("scripts").join(name);
-            if candidate.is_file() {
-                return Ok(candidate);
-            }
-        }
-    }
-    bail!(
-        "could not locate scripts/{name}.
-The cloning installer is shipped with the source checkout. If you installed
-via the binary release, the embedded copy at apps/voiceforge-cli/src/embedded_install.rs
-must be extracted first (PR-AB step 6c will wire that up automatically)."
-    )
-}
+// `resolve_script_named` was deleted in v0.4.1 — use
+// `embedded_install::resolve_runtime_script` instead. The runtime
+// scripts are now embedded in the binary and extracted on first use,
+// so brew + curl installs no longer need a source checkout.
 
 /// Invoke the install script with the right env vars + stream output.
 ///
@@ -491,7 +456,7 @@ pub async fn run(force: bool, check: bool, uninstall: bool) -> Result<()> {
     }
 
     let engine = install_ui::engine_from_env()?;
-    let script = resolve_script_named(engine.script_filename())?;
+    let script = crate::embedded_install::resolve_runtime_script(engine.script_filename())?;
     let mode = if check {
         "check"
     } else if uninstall {
