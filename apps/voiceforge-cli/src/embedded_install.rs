@@ -188,7 +188,11 @@ pub fn resolve_runtime_script_with_repo_lookup<F: FnOnce() -> Option<PathBuf>>(
 /// Other runtime scripts (clone_voice_*, *_synth.py, install_cloning.sh)
 /// are NOT extracted here — they're extracted lazily via
 /// `resolve_runtime_script` when their respective commands run.
-#[allow(dead_code)] // consumed by install_smoke::run_smoke_test_with on the wizard path.
+// Retained for tests + as a stable entry point if a future smoke /
+// uninstall flow needs to materialize every embedded asset up-front.
+// `install_smoke` references SMOKE_REFERENCE_{WAV,TXT} directly today
+// and does NOT call extract_all (audit: 2026-05-27, no source caller).
+#[allow(dead_code)]
 pub fn extract_all() -> Result<ExtractedAssets> {
     use std::io::Write;
 
@@ -221,7 +225,7 @@ pub fn extract_all() -> Result<ExtractedAssets> {
 
 /// Result of `extract_all`. Caller uses the script_path to shell
 /// out + smoke_*_path to feed the post-install smoke test.
-#[allow(dead_code)] // returned by extract_all; consumed by install_smoke on wizard path.
+#[allow(dead_code)] // returned by extract_all (see comment above extract_all).
 #[derive(Debug, Clone)]
 pub struct ExtractedAssets {
     pub script_path: PathBuf,
@@ -232,7 +236,11 @@ pub struct ExtractedAssets {
 /// Atomic-rename write that skips when the existing file matches.
 /// Sha256-checks before overwrite so re-running install is a fast
 /// no-op when content hasn't changed.
-fn write_if_changed(path: &std::path::Path, content: &[u8], mode: u32) -> Result<()> {
+fn write_if_changed(
+    path: &std::path::Path,
+    content: &[u8],
+    #[cfg_attr(not(unix), allow(unused_variables))] mode: u32,
+) -> Result<()> {
     if let Ok(existing) = std::fs::read(path) {
         if sha256_eq(&existing, content) {
             // Verify mode is also correct; fix if not.
@@ -264,7 +272,6 @@ fn write_if_changed(path: &std::path::Path, content: &[u8], mode: u32) -> Result
     }
     std::fs::rename(&tmp, path)
         .with_context(|| format!("renaming {} -> {}", tmp.display(), path.display()))?;
-    let _ = mode; // suppress unused on non-unix
     Ok(())
 }
 
@@ -597,32 +604,38 @@ mod tests {
     #[test]
     #[serial]
     fn resolve_runtime_script_prefers_source_checkout_over_extract() {
-        let tmp = TempDir::new().unwrap();
-        let fake_repo = tmp.path().join("fake-repo");
-        let fake_scripts = fake_repo.join("scripts");
-        std::fs::create_dir_all(&fake_scripts).unwrap();
-        let fake_script = fake_scripts.join("install_cloning_fish.sh");
-        std::fs::write(
-            &fake_script,
-            b"#!/usr/bin/env bash\n# fake source-checkout copy\n",
-        )
-        .unwrap();
-        // build.rs's repo lookup returns the configs/ dir; the
-        // resolver walks up to its parent and looks for scripts/.
-        let fake_configs = fake_repo.join("configs");
-        std::fs::create_dir_all(&fake_configs).unwrap();
-        let resolved = resolve_runtime_script_with_repo_lookup("install_cloning_fish.sh", || {
-            Some(fake_configs.clone())
-        })
-        .unwrap();
-        assert_eq!(resolved, fake_script);
-        // Content is the fake (NOT the embedded payload) — proves
-        // precedence in fact, not just in path naming.
-        let content = std::fs::read(&resolved).unwrap();
-        assert!(
-            content.starts_with(b"#!/usr/bin/env bash\n# fake"),
-            "resolver returned source-checkout path but content suggests embedded payload was extracted instead"
-        );
+        // Wrap in with_tmp_home so any extraction fallback (if
+        // precedence ever breaks) lands in a tmpdir rather than the
+        // host's real ~/.voiceforge.
+        with_tmp_home(|| {
+            let tmp = TempDir::new().unwrap();
+            let fake_repo = tmp.path().join("fake-repo");
+            let fake_scripts = fake_repo.join("scripts");
+            std::fs::create_dir_all(&fake_scripts).unwrap();
+            let fake_script = fake_scripts.join("install_cloning_fish.sh");
+            std::fs::write(
+                &fake_script,
+                b"#!/usr/bin/env bash\n# fake source-checkout copy\n",
+            )
+            .unwrap();
+            // The repo lookup returns the configs/ dir; the resolver
+            // walks up to its parent and looks for scripts/.
+            let fake_configs = fake_repo.join("configs");
+            std::fs::create_dir_all(&fake_configs).unwrap();
+            let resolved =
+                resolve_runtime_script_with_repo_lookup("install_cloning_fish.sh", || {
+                    Some(fake_configs.clone())
+                })
+                .unwrap();
+            assert_eq!(resolved, fake_script);
+            // Content is the fake (NOT the embedded payload) — proves
+            // precedence in fact, not just in path naming.
+            let content = std::fs::read(&resolved).unwrap();
+            assert!(
+                content.starts_with(b"#!/usr/bin/env bash\n# fake"),
+                "resolver returned source-checkout path but content suggests embedded payload was extracted instead"
+            );
+        });
     }
 
     /// Plan §3 test 7: with no source checkout reachable, extraction
