@@ -17,11 +17,10 @@
 //! `source` may be a local file path, a `file://` URL (scheme stripped),
 //! or an http/https/ytsearch URL (downloaded via yt-dlp into a tempdir).
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use std::process::{Command, Stdio};
 
 use crate::install_cloning;
-use crate::paths;
 use crate::url_ingest;
 use crate::voices;
 
@@ -79,7 +78,7 @@ fn run_v1(name: String, source: String, force: bool) -> Result<()> {
     let resolved = url_ingest::resolve_source(&source)
         .with_context(|| format!("resolving clone source {source:?}"))?;
 
-    let script = resolve_script_named("clone_voice.sh")?;
+    let script = crate::embedded_install::resolve_runtime_script("clone_voice.sh")?;
 
     let local_path = resolved.local_path();
     let mut cmd = Command::new("bash");
@@ -110,7 +109,7 @@ fn run_v2(name: String, source: String, force: bool) -> Result<()> {
     let resolved = url_ingest::resolve_source(&source)
         .with_context(|| format!("resolving clone source {source:?}"))?;
 
-    let script = resolve_script_named("clone_voice_fish.sh")?;
+    let script = crate::embedded_install::resolve_runtime_script("clone_voice_fish.sh")?;
 
     let local_path = resolved.local_path();
     let mut cmd = Command::new("bash");
@@ -133,25 +132,8 @@ fn run_v2(name: String, source: String, force: bool) -> Result<()> {
     Ok(())
 }
 
-/// Resolve `scripts/<name>` next to the running binary or in the
-/// repo root (when running via `cargo run`). Replaces the v1-only
-/// `resolve_clone_script` so both recipes share one lookup.
-fn resolve_script_named(name: &str) -> Result<std::path::PathBuf> {
-    if let Some(repo_configs) = paths::repo_config_dir() {
-        if let Some(repo) = repo_configs.parent() {
-            let candidate = repo.join("scripts").join(name);
-            if candidate.is_file() {
-                return Ok(candidate);
-            }
-        }
-    }
-    Err(anyhow!(
-        "could not locate scripts/{name}.\n\
-         The clone recipe ships with the source checkout. If you installed\n\
-         via the binary release, follow the manual steps in docs (binary\n\
-         packaging is the next ROADMAP item after 1.7)."
-    ))
-}
+// `resolve_script_named` was deleted in v0.4.1 — use
+// `embedded_install::resolve_runtime_script` instead.
 
 #[cfg(test)]
 mod tests {

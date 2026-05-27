@@ -141,11 +141,13 @@ fi
 
 case "$MODE" in
   uninstall)
-    step "uninstall: removing venv + repo + marker (HF + whisper caches preserved)"
-    run rm -rf "$VENV_DIR" "$REPO_DIR" "$MARKER_FILE"
+    step "uninstall: removing venv + repo + marker + embedded-extract (HF + whisper caches preserved)"
+    EXTRACT_DIR="$CLONING_ROOT/.install"
+    run rm -rf "$VENV_DIR" "$REPO_DIR" "$MARKER_FILE" "$EXTRACT_DIR"
     say "removed $VENV_DIR"
     say "removed $REPO_DIR"
     say "removed $MARKER_FILE"
+    say "removed $EXTRACT_DIR (embedded runtime scripts; re-extracted on next install)"
     say "preserved: ~/.cache/huggingface/    (re-install reuses the model download)"
     say "preserved: ~/.cache/whisper/        (re-install reuses the whisper-medium download)"
     exit 0
