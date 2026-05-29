@@ -152,6 +152,35 @@ voiceforge say --voice peter --text "the staging deploy is on fire"   # ~1 min s
 
 URL ingest is hardened: `--no-playlist`, `--max-filesize 250M`, `--socket-timeout 30`, `--retries 3`. Schemeless `youtube.com/...` is intentionally NOT auto-detected — the error teaches you to add `https://`. EBU R128 loudnorm is applied during ingest so quiet recordings get bumped to broadcast level before the model ever sees them. Silent inputs are rejected loudly.
 
+### 5.5. Source audio → audio notes in a cloned voice
+
+Want a podcast / lecture / YouTube clip re-narrated in someone else's voice? Today this is a manual chain (one-command `voiceforge audiobook` is v0.5). The bundled whisper does the heavy lifting in the middle.
+
+```bash
+# 1. Pull source audio (mono 16 kHz — matches what whisper expects)
+yt-dlp -x --audio-format wav \
+  --postprocessor-args "-ac 1 -ar 16000" \
+  -o source.wav "<URL>"
+
+# 2. (Optional) clip the first 5 minutes — full-length sources can
+#    push step 4 into overnight territory. See Speed Expectations.
+ffmpeg -i source.wav -t 300 source_clip.wav
+
+# 3. Transcribe with the bundled whisper (installed by install-cloning).
+#    --output_dir places source_clip.txt next to the input; the CLI
+#    does NOT write the transcript to stdout, so don't redirect.
+~/.voiceforge/cloning/venv/bin/whisper source_clip.wav \
+  --model medium --output_format txt --output_dir .
+
+# 4. Clone the voice you want to narrate IN (separate audio file ≥60s)
+voiceforge clone narrator ./narrator_60s.wav
+
+# 5. Narrate the transcript in that voice
+voiceforge note --voice narrator --in source_clip.txt --out narrated.wav
+```
+
+Step 5 is overnight-class for 30-minute source audio — see the Speed Expectations section below for honest wall-clock numbers. Sweet spot today is 1-5 minute clips. v0.5 will collapse this whole chain into `voiceforge audiobook --source <url|file> --voice X --out file.wav`.
+
 ### 6. Pipe NDJSON events from any tool into the daemon
 
 ```bash
@@ -339,6 +368,14 @@ test result: FAILED. 3 passed; 1 failed
 
 ## Quick start
 
+> **Before you start:** VoiceForge is macOS arm64 today (Linux is roadmapped, not shipped), and the one-time cloning install pulls ~12 GB of model weights. Bring an M-series Mac and a decent connection.
+>
+> - **Platform:** macOS arm64 only (M1 / M2 / M3 / M4). Linux on the roadmap.
+> - **Disk:** ~12 GB free for `voiceforge install-cloning` (fish-speech S2 Pro weights dominate).
+> - **CPU/GPU:** M-series strongly recommended — MPS is the v0.4.2 default and is ~3× faster than CPU fallback. `VOICEFORGE_FISH_SYNTH_DEVICE=cpu` forces CPU if you're on a memory-constrained 16 GB machine.
+> - **For URL ingest** (clone from YouTube/etc.): `brew install yt-dlp` separately. We shell out to it.
+> - **First-time `install-cloning`:** ~20-60 min depending on your link speed — model download dominates.
+
 **Step 1 — install the binary.** Two paths, same binary. Curl is recommended for first-time installs because it auto-strips the macOS Gatekeeper quarantine bit; the Homebrew binary is currently unsigned (notarization queued as ROADMAP 5.2.1) and triggers an "Apple cannot verify" dialog on first launch.
 
 ```bash
@@ -466,6 +503,23 @@ Two layers, all local:
                 ▼
                 🔊  speakers go brrrr
 ```
+
+## Speed expectations
+
+Here's what "walk away and come back" actually means in wall-clock. Studio-quality cloning is not instant — that's the trade we made for "no cloud, no accounts".
+
+| Use case                        | Output length | MPS wall-clock | CPU wall-clock |
+| ------------------------------- | ------------- | -------------- | -------------- |
+| `voiceforge say` short reaction | 1-3 s         | ~20-60 s       | ~1-3 min       |
+| 1-minute voice note             | 60 s          | ~20 min        | ~1 h           |
+| 5-minute summary                | 5 min         | ~1 h 40 min    | ~5 h           |
+| 30-minute chapter               | 30 min        | ~10 h          | ~30 h          |
+
+All numbers measured on an M2 with fish-speech S2 Pro v0.4.2 (Tyson clone, Whisper-verified character-perfect output). Realtime ratios: ~1/20× on MPS, ~1/62× on CPU.
+
+MPS is the default on Apple Silicon as of v0.4.2 (~3× faster than CPU; same model, same quality, same studio cloning). Set `VOICEFORGE_FISH_SYNTH_DEVICE=cpu` to force CPU — useful on memory-constrained 16 GB M-series if MPS pushes you into swap.
+
+The sweet spot today is short reactions (`voiceforge say` for terminal feedback) and 1-5 minute voice notes. Full-chapter narration is overnight-class work; if that's your use case, expect to kick off `voiceforge note` before bed. v0.5 will revisit the MLX backend for a potential 10-30× speedup if upstream stabilises.
 
 ## What's new since v0.2.0 (currently on `main`)
 
