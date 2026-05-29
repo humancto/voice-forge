@@ -256,6 +256,75 @@ fn skip_weights_omits_hf_download_phase() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// v0.4.2 regression tests — install-cloning robustness fixes
+// ---------------------------------------------------------------------------
+//
+// Bug 1: `--force` mode left `$REPO_DIR` in place, so an engine swap
+//        (v1 GPT-SoVITS → v2 fish-speech) re-used the prior clone's
+//        upstream and the user got a confusing checkout failure.
+// Bug 2: `git fetch origin <SHA>` fails against GitHub's wire protocol
+//        ("upload-pack: not our ref"). We fetch `origin main` instead;
+//        the pinned SHA is reachable from main and the reset --hard
+//        lands it locally.
+
+#[test]
+fn force_mode_rm_line_includes_repo_dir() {
+    // Sha-pin-independent regression for Bug 1. Parse the on-disk script,
+    // find the `force == 1` branch, assert the `rm -rf` line names all
+    // three required paths: venv, repo, marker.
+    let body = std::fs::read_to_string(script_path()).expect("read install_cloning_fish.sh");
+    // Locate the `if [[ "$FORCE" == "1" ]]; then ... fi` block.
+    let force_idx = body
+        .find(r#"if [[ "$FORCE" == "1" ]]; then"#)
+        .expect("force-branch sentinel not found in install_cloning_fish.sh");
+    let tail = &body[force_idx..];
+    let fi_idx = tail.find("\nfi\n").expect("force-branch fi not found");
+    let block = &tail[..fi_idx];
+    // Required: the rm -rf line must name $VENV_DIR, $REPO_DIR, $MARKER_FILE.
+    let rm_line = block
+        .lines()
+        .find(|l| l.trim_start().starts_with("run rm -rf"))
+        .expect("force-branch `run rm -rf ...` line missing");
+    for needle in ["$VENV_DIR", "$REPO_DIR", "$MARKER_FILE"] {
+        assert!(
+            rm_line.contains(needle),
+            "force-branch rm -rf must include {needle}; got: {rm_line}"
+        );
+    }
+}
+
+#[test]
+fn force_mode_dry_run_announces_repo_removal() {
+    // End-to-end via dry-run mode: when FORCE=1 the step banner must
+    // mention "venv + repo + marker", proving the new copy shipped.
+    let tmp = TempDir::new().unwrap();
+    let out = run_script(tmp.path(), &[("VOICEFORGE_INSTALL_CLONING_FORCE", "1")]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("force: removing venv + repo + marker"),
+        "force-mode step banner must announce repo removal:\n{stdout}"
+    );
+}
+
+#[test]
+fn fetch_step_targets_main_not_sha() {
+    // Bug 2 regression: the script must `git fetch ... origin main`,
+    // never `git fetch ... origin "$FISH_SPEECH_SHA"`. Pure string check
+    // against the on-disk script.
+    let body = std::fs::read_to_string(script_path()).expect("read install_cloning_fish.sh");
+    assert!(
+        body.contains(r#"git -C "$REPO_DIR" fetch --quiet origin main"#),
+        "expected `git fetch --quiet origin main` in install_cloning_fish.sh — \
+         GitHub's upload-pack won't serve arbitrary SHAs"
+    );
+    assert!(
+        !body.contains(r#"git -C "$REPO_DIR" fetch --quiet origin "$FISH_SPEECH_SHA""#),
+        "install_cloning_fish.sh still fetches origin <SHA>; \
+         GitHub rejects this with `upload-pack: not our ref`"
+    );
+}
+
 #[test]
 fn unknown_mode_fails_loud() {
     let tmp = TempDir::new().unwrap();

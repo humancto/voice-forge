@@ -250,3 +250,208 @@ fn first_stdout_byte_starts_with_brace() {
         String::from_utf8_lossy(&out.stdout)
     );
 }
+
+// ---------------------------------------------------------------------------
+// v0.4.2 — device autodetect (MPS on Apple Silicon)
+// ---------------------------------------------------------------------------
+//
+// The v0.4.1 default was `device = "cpu"`, which gave ~1/62× realtime on
+// an M2 (~17 minutes for 16.4 s of cloned audio). v0.4.2 ships a
+// `_detect_default_device()` helper that picks `mps` when torch's MPS
+// backend is available + built; ~3× speedup on M-series with the same
+// model and the same studio-quality output (whisper-verified
+// character-perfect on the Tyson clone).
+//
+// VOICEFORGE_FISH_SYNTH_DEVICE remains the explicit override (e.g.
+// memory-constrained 16 GB M-series may want to stay on cpu).
+
+#[test]
+fn fish_speech_synth_defines_device_autodetect_helper() {
+    // Sha-pin-independent regression: assert the helper function exists
+    // and the env-var default call site points at it. Pure text grep
+    // against the on-disk script — no torch import needed.
+    let body = std::fs::read_to_string(script_path()).expect("read fish_speech_synth.py");
+    assert!(
+        body.contains("def _detect_default_device()"),
+        "v0.4.2 MPS default regression — _detect_default_device() helper missing"
+    );
+    assert!(
+        body.contains(
+            r#"os.environ.get("VOICEFORGE_FISH_SYNTH_DEVICE", _detect_default_device())"#
+        ),
+        "v0.4.2 MPS default regression — env-var default no longer calls _detect_default_device()"
+    );
+    // The hardcoded "cpu" default must NOT be back.
+    assert!(
+        !body.contains(r#"os.environ.get("VOICEFORGE_FISH_SYNTH_DEVICE", "cpu")"#),
+        "v0.4.2 regression — env-var default reverted to hardcoded \"cpu\""
+    );
+}
+
+#[test]
+fn detect_default_device_prefers_mps_when_torch_reports_available() {
+    // Behavior test: spawn python with a stub `torch` package on
+    // PYTHONPATH that makes mps.is_available()/is_built() return True,
+    // import the helper directly from the script, assert it returns "mps".
+    // No real torch dependency required — the stub satisfies the imports.
+    let tmp = TempDir::new().unwrap();
+    let stub_dir = tmp.path().join("stubs");
+    let torch_dir = stub_dir.join("torch");
+    let backends_dir = torch_dir.join("backends");
+    let mps_dir = backends_dir.join("mps");
+    std::fs::create_dir_all(&mps_dir).unwrap();
+    // torch/__init__.py
+    std::fs::write(
+        torch_dir.join("__init__.py"),
+        "from . import backends\nclass _Cuda:\n    @staticmethod\n    def is_available():\n        return False\ncuda = _Cuda()\n",
+    )
+    .unwrap();
+    // torch/backends/__init__.py
+    std::fs::write(backends_dir.join("__init__.py"), "from . import mps\n").unwrap();
+    // torch/backends/mps/__init__.py — claim MPS is available + built.
+    std::fs::write(
+        mps_dir.join("__init__.py"),
+        "def is_available():\n    return True\ndef is_built():\n    return True\n",
+    )
+    .unwrap();
+
+    // Driver script: import the helper out of fish_speech_synth.py and
+    // print its return value. NB: the script's module body does
+    // `sys.stdout = sys.stderr` (the NDJSON protocol stash) at import
+    // time, so we MUST print through `sys.__stdout__` after exec_module
+    // — otherwise the value lands on stderr and stdout reads empty.
+    let driver = format!(
+        r#"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("fss", r"{script}")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print(mod._detect_default_device(), file=sys.__stdout__)
+"#,
+        script = script_path().display()
+    );
+    let out = Command::new("python3")
+        .arg("-c")
+        .arg(&driver)
+        .env("PYTHONPATH", &stub_dir)
+        // Make sure the real torch (if installed in the host's site-packages)
+        // does NOT shadow our stub. PYTHONPATH is searched before site-packages
+        // for the current interpreter, so the stub wins.
+        .output()
+        .expect("invoke python driver");
+    assert!(
+        out.status.success(),
+        "driver failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        stdout.trim(),
+        "mps",
+        "_detect_default_device() must return \"mps\" when torch.backends.mps says so; got {stdout:?}"
+    );
+}
+
+#[test]
+fn detect_default_device_falls_back_to_cpu_when_torch_missing() {
+    // No torch on PYTHONPATH at all — the `import torch` inside the
+    // helper raises ImportError, the `except Exception: pass` swallows
+    // it, and the function returns "cpu". Use a clean PYTHONPATH so the
+    // host's torch (if any) doesn't satisfy the import.
+    let tmp = TempDir::new().unwrap();
+    let driver = format!(
+        r#"
+import importlib.util, sys
+# Forcibly remove any pre-loaded torch from sys.modules so the import
+# inside the helper truly fails. (The test harness's parent python may
+# have imported torch via some other path.)
+for k in list(sys.modules):
+    if k == "torch" or k.startswith("torch."):
+        del sys.modules[k]
+spec = importlib.util.spec_from_file_location("fss", r"{script}")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+# Poison sys.path so torch can never be located, then probe the helper.
+# Print through __stdout__ — the script body redirected sys.stdout to
+# stderr for NDJSON protocol cleanliness.
+sys.path = [r"{tmp}"]
+print(mod._detect_default_device(), file=sys.__stdout__)
+"#,
+        script = script_path().display(),
+        tmp = tmp.path().display(),
+    );
+    let out = Command::new("python3")
+        .arg("-c")
+        .arg(&driver)
+        // Empty PYTHONPATH; we already clamp sys.path inside the driver.
+        .env("PYTHONPATH", tmp.path())
+        .output()
+        .expect("invoke python driver");
+    assert!(
+        out.status.success(),
+        "driver failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        stdout.trim(),
+        "cpu",
+        "_detect_default_device() must fall back to \"cpu\" when torch is unimportable; got {stdout:?}"
+    );
+}
+
+#[test]
+fn detect_default_device_picks_cuda_when_mps_unavailable_but_cuda_is() {
+    // Mirror the MPS stub but flip the booleans: mps.is_available() False,
+    // cuda.is_available() True. Helper must return "cuda".
+    let tmp = TempDir::new().unwrap();
+    let stub_dir = tmp.path().join("stubs");
+    let torch_dir = stub_dir.join("torch");
+    let backends_dir = torch_dir.join("backends");
+    let mps_dir = backends_dir.join("mps");
+    std::fs::create_dir_all(&mps_dir).unwrap();
+    // torch/__init__.py — cuda.is_available() returns True.
+    std::fs::write(
+        torch_dir.join("__init__.py"),
+        "from . import backends\nclass _Cuda:\n    @staticmethod\n    def is_available():\n        return True\ncuda = _Cuda()\n",
+    )
+    .unwrap();
+    std::fs::write(backends_dir.join("__init__.py"), "from . import mps\n").unwrap();
+    // mps.is_available() returns False.
+    std::fs::write(
+        mps_dir.join("__init__.py"),
+        "def is_available():\n    return False\ndef is_built():\n    return False\n",
+    )
+    .unwrap();
+
+    let driver = format!(
+        r#"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("fss", r"{script}")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print(mod._detect_default_device(), file=sys.__stdout__)
+"#,
+        script = script_path().display()
+    );
+    let out = Command::new("python3")
+        .arg("-c")
+        .arg(&driver)
+        .env("PYTHONPATH", &stub_dir)
+        .output()
+        .expect("invoke python driver");
+    assert!(
+        out.status.success(),
+        "driver failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        stdout.trim(),
+        "cuda",
+        "_detect_default_device() must return \"cuda\" when MPS is unavailable but CUDA is; got {stdout:?}"
+    );
+}
