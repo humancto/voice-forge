@@ -256,8 +256,11 @@ say "arm64 python confirmed"
 # -- 6. force-mode wipe ----------------------------------------------
 
 if [[ "$FORCE" == "1" ]]; then
-  step "force: removing venv + marker (HF + whisper caches preserved)"
-  run rm -rf "$VENV_DIR" "$MARKER_FILE"
+  step "force: removing venv + repo + marker (HF + whisper caches preserved)"
+  # $REPO_DIR is included so an engine swap (v1 GPT-SoVITS → v2 fish-speech)
+  # doesn't leave the prior clone behind with the wrong upstream. The HF
+  # model cache + whisper weights live elsewhere and are preserved.
+  run rm -rf "$VENV_DIR" "$REPO_DIR" "$MARKER_FILE"
 fi
 
 # -- 7. venv ----------------------------------------------------------
@@ -290,7 +293,13 @@ else
     run retry 3 5 git clone --quiet "$FISH_SPEECH_REPO" "$REPO_DIR"
   fi
   step "checking out pinned SHA $FISH_SPEECH_SHA"
-  run git -C "$REPO_DIR" fetch --quiet origin "$FISH_SPEECH_SHA"
+  # GitHub's upload-pack only serves refs (branches/tags), not arbitrary
+  # SHAs ("fatal: remote error: upload-pack: not our ref <hex>"). We fetch
+  # `main` instead — the pinned SHA is reachable from main's history and
+  # the subsequent reset --hard lands it locally. If upstream ever drops
+  # the SHA (history rewrite), the reset will fail loud with "unknown
+  # revision", which is the right signal to bump the pin.
+  run git -C "$REPO_DIR" fetch --quiet origin main
   # reset --hard (not checkout) so a previously-corrupted worktree from
   # a partial install can never block the pinned SHA from landing.
   run git -C "$REPO_DIR" reset --quiet --hard "$FISH_SPEECH_SHA"
