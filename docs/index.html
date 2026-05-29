@@ -570,7 +570,7 @@ ok: 11  warn: 0   error: 0
             <div class="k">source</div>      <div class="v">~60s clean single-speaker audio (you bring it; YouTube URL OK)</div>
             <div class="k">backend</div>     <div class="v">fish-speech S2 Pro · DAC codec + text2semantic AR</div>
             <div class="k">reference</div>   <div class="v">single 8-30s clip + Whisper-medium transcript</div>
-            <div class="k">latency</div>     <div class="v">~30-90s cold model load, ~3-8s synth thereafter (CPU M-series)</div>
+            <div class="k">latency</div>     <div class="v">~30-90s cold model load, then ~20s of synth per 1s of audio on MPS (Apple Silicon default, v0.4.2+); ~62s/s on CPU fallback</div>
             <div class="k">cache</div>       <div class="v">sha256(text + voice + created_at) — separate hash domain from explicit-ref smoke path</div>
             <div class="k">install gate</div><div class="v">post-install smoke synth verifies the runtime end-to-end before reporting "ready"</div>
           </div>
@@ -653,7 +653,7 @@ voiceforge 0.2.0 — system check
 <span class="ok">[OK]</span>    home             ~/.voiceforge
 <span class="ok">[OK]</span>    audio backend    rodio (CoreAudio)
 <span class="ok">[OK]</span>    embedded TTS     macOS say
-<span class="ok">[OK]</span>    cloning          GPT-SoVITS @ 08d627c
+<span class="ok">[OK]</span>    cloning          fish-speech S2 Pro @ 3dd1f85c (device: mps)
 <span class="ok">[OK]</span>    presets          5 installed
 <span class="ok">[OK]</span>    config.toml      active_voice = "peter"
 <span class="ok">[OK]</span>    daemon           running at ~/.voiceforge/voiceforge.sock
@@ -678,7 +678,7 @@ ok: 10  warn: 0   error: 0</div>
           </tr>
         </thead>
         <tbody>
-          <tr><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge say --voice X --text "..."</code></td><td style="padding: 8px 10px; vertical-align: top;">speaks text in voice X. routes to pack (~50 ms) if X is an installed pack and text matches an event/phrase; else synthesizes via cloning (~2-3 s) or embedded TTS (&lt;500 ms).</td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">the universal entry point</td></tr>
+          <tr><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge say --voice X --text "..."</code></td><td style="padding: 8px 10px; vertical-align: top;">speaks text in voice X. routes to pack (~50 ms) if X is an installed pack and text matches an event/phrase; else synthesizes via cloning (~1 min on MPS for a short phrase; see Speed Expectations) or embedded TTS (&lt;500 ms).</td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">the universal entry point</td></tr>
           <tr style="background: var(--surface-2);"><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge run -- &lt;cmd&gt;</code></td><td style="padding: 8px 10px; vertical-align: top;">runs &lt;cmd&gt;, speaks build_success / build_failed when it exits.</td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">wrap a single long command</td></tr>
           <tr><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge daemon</code></td><td style="padding: 8px 10px; vertical-align: top;">long-running unix-socket NDJSON server at <code>~/.voiceforge/voiceforge.sock</code>. recipient for everything below.</td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">always-on prerequisite for hooks/agents</td></tr>
           <tr style="background: var(--surface-2);"><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge send &lt;event&gt;</code></td><td style="padding: 8px 10px; vertical-align: top;">single-frame daemon client. exit codes 0/1/2/4 distinguish ok/rejected/unreachable/protocol-error. retry-loop for daemon-startup race.</td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">cursor / scripts / one-shots</td></tr>
@@ -687,7 +687,7 @@ ok: 10  warn: 0   error: 0</div>
           <tr><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge install git-hooks</code></td><td style="padding: 8px 10px; vertical-align: top;">installs post-commit / post-merge / post-rewrite / pre-push hooks. honors <code>core.hooksPath</code>. chases worktree <code>.git</code>-file. detects + warns on husky/lefthook collisions.</td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">git workflow audio</td></tr>
           <tr style="background: var(--surface-2);"><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge pack {list,install,remove,info}</code></td><td style="padding: 8px 10px; vertical-align: top;">manages pre-rendered packs from the static index at humancto/voice-forge-packs. sha256-verified install. ~3 sec, ~7-10 MB per pack.</td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">add/remove celebrity voices</td></tr>
           <tr><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge play --pack X --event Y</code></td><td style="padding: 8px 10px; vertical-align: top;">~50 ms WAV playback from an installed pack. no synth, no model load.</td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">scripted reactions to fixed events</td></tr>
-          <tr style="background: var(--surface-2);"><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge install-cloning</code></td><td style="padding: 8px 10px; vertical-align: top;">installs the GPT-SoVITS v2 cloning runtime (Python 3.11 + ffmpeg@6). idempotent. <code>--check</code> verifies, <code>--force</code> rebuilds, <code>--uninstall</code> removes.</td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">unlock arbitrary-text cloning (mac arm64)</td></tr>
+          <tr style="background: var(--surface-2);"><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge install-cloning</code></td><td style="padding: 8px 10px; vertical-align: top;">installs the fish-speech S2 Pro cloning runtime (Python 3.11 + ffmpeg@6 + ~10 GB model weights; ~20-60 min depending on connection). idempotent. <code>--check</code> verifies, <code>--force</code> rebuilds, <code>--uninstall</code> removes. legacy GPT-SoVITS v1/v2 markers still migrate-supported.</td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">unlock arbitrary-text cloning (mac arm64)</td></tr>
           <tr><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge clone &lt;name&gt; &lt;source&gt;</code></td><td style="padding: 8px 10px; vertical-align: top;">clones a voice from a local file OR URL (yt-dlp resolves it). EBU R128 loudnorm during ingest. silent inputs rejected. multi-aux-ref recipe (1 main + 5 × 10 s aux), Whisper-transcribed.</td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">make your own voice profiles</td></tr>
           <tr style="background: var(--surface-2);"><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge ingest &lt;input&gt; &lt;output&gt;</code></td><td style="padding: 8px 10px; vertical-align: top;">transcodes any audio source to canonical 32 kHz mono 16-bit pcm WAV. accepts file paths and URLs. validates 10–60 s duration. applies loudnorm. rejects silent.</td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">prep audio for cloning manually</td></tr>
           <tr><td style="padding: 8px 10px; vertical-align: top;"><code>voiceforge voices</code></td><td style="padding: 8px 10px; vertical-align: top;">lists built-in presets, cloned voices, AND installed packs in one view. <code>voiceforge voices remove &lt;name&gt;</code> deletes a clone.</td><td style="padding: 8px 10px; color: var(--mute); vertical-align: top;">audit what voices you have</td></tr>
@@ -784,15 +784,15 @@ hint: open a new shell or `source /Users/me/.zshrc`</span>
     <section id="pipeline">
       <div class="section-tag"><span class="num">05</span> <span>pipeline</span> <span class="rule"></span> <span>under the hood</span></div>
       <h2>two layers. <span class="accent">all local.</span></h2>
-      <p>rust CLI for the dev-side surface (install, clone, say, run, doctor, daemon) and a python venv that hosts GPT-SoVITS v2. the synth is a long-lived NDJSON child — model loads once per process, warm for every call after that.</p>
+      <p>rust CLI for the dev-side surface (install, clone, say, run, doctor, daemon) and a python venv that hosts fish-speech S2 Pro (v0.4.2 default; GPT-SoVITS v1/v2 markers still migrate-supported). the synth is a long-lived NDJSON child — model loads once per process, warm for every call after that. Apple Silicon defaults to MPS device; CPU fallback works.</p>
 
 <div class="diagram">         <span class="mute">terminal event                           voiceforge process</span>
 <span class="mute">         (build, test, git, agent)</span>
                 <span class="mute">│</span>
                 <span class="mute">▼</span>
        ┌─────────────────────┐         ┌──────────────────────────┐
-       <span class="acid">│ apps/voiceforge-cli │</span>         <span class="acid">│ scripts/cloning_synth.py │</span>
-       <span class="acid">│ (Rust, async tokio) │</span>  ───►   <span class="acid">│ (Python, GPT-SoVITS v2)  │</span>
+       <span class="acid">│ apps/voiceforge-cli │</span>         <span class="acid">│ scripts/fish_speech_synth.py │</span>
+       <span class="acid">│ (Rust, async tokio) │</span>  ───►   <span class="acid">│ (Python, fish-speech S2 Pro) │</span>
        <span class="acid">│                     │</span>  NDJSON   <span class="acid">│                          │</span>
        <span class="acid">│ rule engine         │</span>  stdin    <span class="acid">│ lazy load                │</span>
        <span class="acid">│ engine facade       │</span>  stdout   <span class="acid">│ 1 main + 5 aux refs      │</span>
@@ -816,7 +816,7 @@ hint: open a new shell or `source /Users/me/.zshrc`</span>
     <section id="packs">
       <div class="section-tag"><span class="num">06</span> <span>voice packs</span> <span class="rule"></span> <span>install in one command</span></div>
       <h2>character voices. <span class="accent">install in one command.</span></h2>
-      <p>live cloning is fast and works for arbitrary text — but on stylized characters (Peter Griffin, Jimmy Kimmel) GPT-SoVITS v2 hits a quality ceiling. for terminal feedback (a fixed set of events) we render packs of phrases <em>once</em>, on a beefy model — <strong>fish-speech S2 Pro</strong> — and ship the WAVs through a separate index. runtime playback is sub-100ms.</p>
+      <p>live cloning at studio quality is not instant — that's the trade we made for "no cloud, no accounts" (see Speed Expectations). for terminal feedback (a fixed set of events) we render packs of phrases <em>once</em> with fish-speech S2 Pro and ship the WAVs through a separate index. runtime playback is sub-100ms.</p>
 
       <div class="term" style="margin: 24px 0;">
         <div class="head"><div class="dots"><span></span><span></span><span></span></div><div class="title">install + use a pack</div></div>
