@@ -36,7 +36,11 @@ for the same voice reuse the cached tokens.
 
 ENV VARS:
   VOICEFORGE_HOME            installation root (default ~/.voiceforge)
-  VOICEFORGE_FISH_SYNTH_DEVICE  cpu | cuda | mps (default cpu)
+  VOICEFORGE_FISH_SYNTH_DEVICE  cpu | cuda | mps
+                                Default is autodetected: mps on Apple
+                                Silicon, cuda on NVIDIA, cpu otherwise.
+                                Set explicitly to override (e.g. cpu on
+                                a memory-constrained 16 GB M-series).
   VOICEFORGE_FISH_SYNTH_SEED    int (default 0) — per-request seed for
                                 bit-stable resume across re-runs
 
@@ -234,10 +238,31 @@ def synth(handles: dict, prompt_text: str, prompt_tokens, text: str, out_path: P
 # ----------------------------------------------------------------------------
 
 
+def _detect_default_device() -> str:
+    """Pick the fastest backend available on this host.
+
+    Apple Silicon → mps (≈3× CPU on a measured M2 / Tyson clone, same
+    studio quality). NVIDIA → cuda. Anything else → cpu. Importing torch
+    is cheap once it's already loaded by the synth path; if torch is
+    unavailable for any reason we fall through to "cpu" rather than
+    raising — the actual model load below will surface the real error.
+    """
+    try:
+        import torch
+
+        if torch.backends.mps.is_available() and torch.backends.mps.is_built():
+            return "mps"
+        if torch.cuda.is_available():
+            return "cuda"
+    except Exception:
+        pass
+    return "cpu"
+
+
 def main() -> int:
     home_env = os.environ.get("VOICEFORGE_HOME")
     home = Path(home_env) if home_env else Path.home() / ".voiceforge"
-    device = os.environ.get("VOICEFORGE_FISH_SYNTH_DEVICE", "cpu")
+    device = os.environ.get("VOICEFORGE_FISH_SYNTH_DEVICE", _detect_default_device())
     seed = int(os.environ.get("VOICEFORGE_FISH_SYNTH_SEED", "0"))
 
     marker = home / "cloning/INSTALLED.toml"
