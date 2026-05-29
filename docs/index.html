@@ -398,7 +398,7 @@
             <div class="title">~/ — voiceforge v0.4</div>
           </div>
 <div class="body"><span class="prompt">$</span> curl -fsSL https://raw.githubusercontent.com/humancto/voice-forge/main/install.sh | bash
-<span class="prompt">$</span> voiceforge install-cloning                  <span class="ghost"># ~12 GB, ~30 min — fish-speech + whisper</span>
+<span class="prompt">$</span> voiceforge install-cloning                  <span class="ghost"># ~12 GB, ~20-60 min depending on connection — fish-speech + whisper</span>
 <span class="ghost">  voiceforge install-cloning · fish-speech S2 Pro [████████████████████] 17/17 · done</span>
 <span class="ghost">    ✓ smoke passed in 41203 ms (196608 bytes, 98304 samples)</span>
 <span class="prompt">$</span> voiceforge clone <span class="voice">tyson</span> https://www.youtube.com/watch?v=9D05ej8u-gU
@@ -458,12 +458,12 @@
 
         <div class="term">
           <div class="head"><div class="dots"><span></span><span></span><span></span></div><div class="title">5 — clone any voice from any audio source — including YouTube URLs (v0.4: fish-speech S2 Pro)</div></div>
-<div class="body"><span class="prompt">$</span> voiceforge install-cloning                       <span class="ghost"># one-time, ~30 min, ~12 GB; macOS arm64</span>
+<div class="body"><span class="prompt">$</span> voiceforge install-cloning                       <span class="ghost"># one-time, ~20-60 min depending on connection, ~12 GB; macOS arm64</span>
 <span class="ghost">  pixel-3D BUILD-style wizard renders all 17 install phases live</span>
 <span class="ghost">  ✓ smoke passes — install proves itself before claiming "ready"</span>
 <span class="prompt">$</span> voiceforge clone <span class="voice">tyson</span> https://www.youtube.com/watch?v=...
 <span class="prompt">$</span> voiceforge say --voice <span class="voice">tyson</span> --text "the universe is under no obligation to make sense to you"
-<span class="out">→ studio-quality output. ~3-8 s synth on CPU per utterance (M-series).
+<span class="out">→ studio-quality output. ~1 min synth on MPS / ~3 min on CPU for a short phrase — see Speed Expectations in the README.
 → yt-dlp hardened: --no-playlist --max-filesize 250M --socket-timeout 30 --retries 3.
 → EBU R128 loudnorm during ingest — quiet recordings get bumped to broadcast level. silent inputs rejected.
 → schema-2 marker + standalone SMOKE.toml; v1 GPT-SoVITS installs keep working (set VOICEFORGE_TTS_ENGINE=gpt-sovits-v2).
@@ -501,7 +501,7 @@
     <section id="install">
       <div class="section-tag"><span class="num">01</span> <span>install</span> <span class="rule"></span> <span>~5 sec via prebuilt binary or brew</span></div>
       <h2>two install paths. <span class="accent">same binary.</span></h2>
-      <p class="lede">brew if you want upgrade-tracking via <code>brew upgrade</code>. curl-pipe-bash if you want one command, no extra commitment. step 2 (cloning runtime, ~12 GB / ~30 min) is heavy and OPTIONAL — skip it if you just want OS-default voice or the 5 pre-rendered packs.</p>
+      <p class="lede">brew if you want upgrade-tracking via <code>brew upgrade</code>. curl-pipe-bash if you want one command, no extra commitment. step 2 (cloning runtime, ~12 GB / ~20-60 min depending on connection) is heavy and OPTIONAL — skip it if you just want OS-default voice or the 5 pre-rendered packs.</p>
 
       <div class="install-cards" style="grid-template-columns: 1fr 1fr; gap: 18px;">
         <div class="icard">
@@ -547,12 +547,12 @@ ok: 11  warn: 0   error: 0
       <h3 style="margin-top: 36px; font-size: 18px; color: var(--ink);">optional: live cloning runtime (v0.4 — fish-speech S2 Pro)</h3>
       <p style="margin-top: 8px; color: var(--mute);">skip if you only want the pre-rendered packs (peter / kimmel / neil_tyson / trump / musk). install only if you want arbitrary text in your own cloned voice. <strong>v0.4 pivots to fish-speech S2 Pro</strong> (the same engine that pre-rendered the shipped packs) — studio-quality output at the cost of a 30-min, ~12 GB one-time install. legacy GPT-SoVITS path stays alive: <code>VOICEFORGE_INSTALL_CLONING_ENGINE=gpt-sovits-v2</code>.</p>
       <div class="term" style="max-width: 720px; margin-top: 12px;">
-        <div class="head"><div class="dots"><span></span><span></span><span></span></div><div class="title">cloning runtime (~30 min, ~12 GB; macOS arm64 today)</div></div>
+        <div class="head"><div class="dots"><span></span><span></span><span></span></div><div class="title">cloning runtime (~20-60 min, ~12 GB; macOS arm64 today)</div></div>
 <div class="body"><span class="prompt">$</span> voiceforge install-cloning                              <span class="ghost"># Python 3.11 + ffmpeg@6 + fish-speech S2 Pro + whisper-medium</span>
 <span class="ghost">  voiceforge install-cloning · fish-speech S2 Pro [██████████████████] 17/17</span>
 <span class="ghost">    ✓ smoke passed in 41203 ms (196608 bytes, 98304 samples)</span>
 <span class="prompt">$</span> voiceforge clone <span class="voice">myname</span> https://www.youtube.com/watch?v=...   <span class="ghost"># yt-dlp downloads + clones</span>
-<span class="prompt">$</span> voiceforge say --voice <span class="voice">myname</span> --text "anything you write"      <span class="ghost"># ~3-8 s synth on CPU, then cached</span></div>
+<span class="prompt">$</span> voiceforge say --voice <span class="voice">myname</span> --text "anything you write"      <span class="ghost"># ~1 min synth on MPS (Apple Silicon default), then cached</span></div>
       </div>
 
       <p style="margin-top: 28px; color: var(--mute); font-size: 14px;"><strong>prereqs</strong>: nothing for the brew path. <code>ffmpeg</code> on PATH if you'll use <code>voiceforge ingest</code> or <code>clone</code> (brew installs it as a dep when you run <code>install-cloning</code>). <code>yt-dlp</code> on PATH if you'll pass URLs (optional — local files don't need it). Linux/Windows users get the binary + packs + agent integrations today; live cloning is macOS-arm64 today (ROADMAP 2.1.1 widens it).</p>
