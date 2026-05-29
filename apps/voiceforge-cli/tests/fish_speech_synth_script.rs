@@ -401,3 +401,57 @@ print(mod._detect_default_device(), file=sys.__stdout__)
         "_detect_default_device() must fall back to \"cpu\" when torch is unimportable; got {stdout:?}"
     );
 }
+
+#[test]
+fn detect_default_device_picks_cuda_when_mps_unavailable_but_cuda_is() {
+    // Mirror the MPS stub but flip the booleans: mps.is_available() False,
+    // cuda.is_available() True. Helper must return "cuda".
+    let tmp = TempDir::new().unwrap();
+    let stub_dir = tmp.path().join("stubs");
+    let torch_dir = stub_dir.join("torch");
+    let backends_dir = torch_dir.join("backends");
+    let mps_dir = backends_dir.join("mps");
+    std::fs::create_dir_all(&mps_dir).unwrap();
+    // torch/__init__.py — cuda.is_available() returns True.
+    std::fs::write(
+        torch_dir.join("__init__.py"),
+        "from . import backends\nclass _Cuda:\n    @staticmethod\n    def is_available():\n        return True\ncuda = _Cuda()\n",
+    )
+    .unwrap();
+    std::fs::write(backends_dir.join("__init__.py"), "from . import mps\n").unwrap();
+    // mps.is_available() returns False.
+    std::fs::write(
+        mps_dir.join("__init__.py"),
+        "def is_available():\n    return False\ndef is_built():\n    return False\n",
+    )
+    .unwrap();
+
+    let driver = format!(
+        r#"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("fss", r"{script}")
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+print(mod._detect_default_device(), file=sys.__stdout__)
+"#,
+        script = script_path().display()
+    );
+    let out = Command::new("python3")
+        .arg("-c")
+        .arg(&driver)
+        .env("PYTHONPATH", &stub_dir)
+        .output()
+        .expect("invoke python driver");
+    assert!(
+        out.status.success(),
+        "driver failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        stdout.trim(),
+        "cuda",
+        "_detect_default_device() must return \"cuda\" when MPS is unavailable but CUDA is; got {stdout:?}"
+    );
+}

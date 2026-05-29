@@ -75,3 +75,73 @@ fn install_cloning_check_runs_the_bash_script_under_tmp_home() {
         "install-cloning --check unexpectedly succeeded against an empty HOME"
     );
 }
+
+// ---------------------------------------------------------------------------
+// v0.4.2 — embedded-payload parity for the synth script
+// ---------------------------------------------------------------------------
+//
+// The on-disk-grep tests in `fish_speech_synth_script.rs` prove the
+// source file shipped with the v0.4.2 helper. But the release binary
+// extracts from an `include_bytes!` payload, not from disk. This test
+// pulls the same payload via the same relative path that
+// `src/embedded_install.rs` uses, so a divergence (e.g. someone edits
+// the on-disk script but a build.rs caching bug freezes the embedded
+// copy) would trip here at unit-test speed.
+
+const EMBEDDED_FISH_SPEECH_SYNTH_PY: &[u8] =
+    include_bytes!("../../../scripts/fish_speech_synth.py");
+const EMBEDDED_INSTALL_CLONING_FISH_SH: &[u8] =
+    include_bytes!("../../../scripts/install_cloning_fish.sh");
+
+#[test]
+fn embedded_fish_speech_synth_payload_has_mps_helper() {
+    let body = std::str::from_utf8(EMBEDDED_FISH_SPEECH_SYNTH_PY)
+        .expect("fish_speech_synth.py must be valid UTF-8");
+    assert!(
+        body.contains("def _detect_default_device()"),
+        "embedded fish_speech_synth.py payload missing _detect_default_device helper"
+    );
+    assert!(
+        body.contains(r#"os.environ.get("VOICEFORGE_FISH_SYNTH_DEVICE", _detect_default_device())"#),
+        "embedded fish_speech_synth.py payload's env-var default no longer calls _detect_default_device"
+    );
+    // The MPS fallback env var must be set when device == "mps" — without
+    // it, fish-speech S2 Pro aborts on NotImplementedError for ops MPS
+    // doesn't natively implement.
+    assert!(
+        body.contains(r#"os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")"#),
+        "embedded fish_speech_synth.py payload missing PYTORCH_ENABLE_MPS_FALLBACK \
+         setdefault — MPS path will crash on day one"
+    );
+}
+
+#[test]
+fn embedded_install_cloning_fish_payload_has_v042_fixes() {
+    let body = std::str::from_utf8(EMBEDDED_INSTALL_CLONING_FISH_SH)
+        .expect("install_cloning_fish.sh must be valid UTF-8");
+    // Bug 1 — force branch must wipe $REPO_DIR alongside venv + marker.
+    let force_idx = body
+        .find(r#"if [[ "$FORCE" == "1" ]]; then"#)
+        .expect("force-branch sentinel missing from embedded payload");
+    let tail = &body[force_idx..];
+    let fi_idx = tail.find("\nfi\n").expect("force-branch fi missing");
+    let block = &tail[..fi_idx];
+    let rm_line = block
+        .lines()
+        .find(|l| l.trim_start().starts_with("run rm -rf"))
+        .expect("force-branch rm -rf line missing");
+    assert!(
+        rm_line.contains("$REPO_DIR"),
+        "embedded install_cloning_fish.sh force-branch rm -rf must include \
+         $REPO_DIR; got: {rm_line}"
+    );
+    // Bug 2 — fetch must target `main`, never the pinned SHA.
+    assert!(
+        body.contains(r#"git -C "$REPO_DIR" fetch --quiet origin main"#),
+        "embedded install_cloning_fish.sh must fetch origin main"
+    );
+    assert!(
+        !body.contains(r#"git -C "$REPO_DIR" fetch --quiet origin "$FISH_SPEECH_SHA""#),
+        "embedded install_cloning_fish.sh still fetches origin <SHA>"
+    );
+}

@@ -263,6 +263,15 @@ def main() -> int:
     home_env = os.environ.get("VOICEFORGE_HOME")
     home = Path(home_env) if home_env else Path.home() / ".voiceforge"
     device = os.environ.get("VOICEFORGE_FISH_SYNTH_DEVICE", _detect_default_device())
+    # fish-speech S2 Pro hits a handful of ops MPS doesn't implement
+    # natively (notably some complex-tensor paths inside the DAC codec).
+    # Without PYTORCH_ENABLE_MPS_FALLBACK=1 the runtime aborts with
+    # NotImplementedError instead of dispatching the unsupported op to
+    # CPU; with it set, the overall path stays on MPS for the heavy
+    # transformer work and only the rare op punts. Set BEFORE the model
+    # is loaded — torch reads it once at backend init.
+    if device == "mps":
+        os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     seed = int(os.environ.get("VOICEFORGE_FISH_SYNTH_SEED", "0"))
 
     marker = home / "cloning/INSTALLED.toml"
