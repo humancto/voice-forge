@@ -102,7 +102,7 @@ voiceforge say --voice trump --text "build_failed"               # plays pre-ren
 voiceforge run --voice trump -- npm test                          # speaks on success/failure
 ```
 
-5 packs × 13 events = 65 ready-to-play reactions. No Python, no GPU, no 1.7 GB download. The pack tarballs are 7-10 MB each and the binary is ~3 MB.
+5 packs × 13 events = 65 ready-to-play reactions. No Python, no GPU, no 12 GB download. The pack tarballs are 7-10 MB each and the binary is ~3 MB.
 
 ### 2. Wire it into Claude Code so your AI agent talks back
 
@@ -145,12 +145,41 @@ Husky / lefthook / pre-commit users get a stderr warning (we never silently clob
 ### 5. Clone any voice from any audio source — including YouTube URLs
 
 ```bash
-voiceforge install-cloning                   # one-time, ~10 min, ~1.7 GB; macOS arm64 today
+voiceforge install-cloning                   # one-time, ~20-60 min depending on connection, ~12 GB; macOS arm64 today
 voiceforge clone peter https://www.youtube.com/watch?v=T2w5SQ0L65I    # yt-dlp under the hood
-voiceforge say --voice peter --text "the staging deploy is on fire"   # ~2-3 s synth on CPU
+voiceforge say --voice peter --text "the staging deploy is on fire"   # ~1 min synth on MPS (Apple Silicon default); see Speed Expectations
 ```
 
 URL ingest is hardened: `--no-playlist`, `--max-filesize 250M`, `--socket-timeout 30`, `--retries 3`. Schemeless `youtube.com/...` is intentionally NOT auto-detected — the error teaches you to add `https://`. EBU R128 loudnorm is applied during ingest so quiet recordings get bumped to broadcast level before the model ever sees them. Silent inputs are rejected loudly.
+
+### 5.5. Source audio → audio notes in a cloned voice
+
+Want a podcast / lecture / YouTube clip re-narrated in someone else's voice? Today this is a manual chain (one-command `voiceforge audiobook` is v0.5). The bundled whisper does the heavy lifting in the middle.
+
+```bash
+# 1. Pull source audio (mono 16 kHz — matches what whisper expects)
+yt-dlp -x --audio-format wav \
+  --postprocessor-args "-ac 1 -ar 16000" \
+  -o source.wav "<URL>"
+
+# 2. (Optional) clip the first 5 minutes — full-length sources can
+#    push step 4 into overnight territory. See Speed Expectations.
+ffmpeg -i source.wav -t 300 source_clip.wav
+
+# 3. Transcribe with the bundled whisper (installed by install-cloning).
+#    --output_dir places source_clip.txt next to the input; the CLI
+#    does NOT write the transcript to stdout, so don't redirect.
+~/.voiceforge/cloning/venv/bin/whisper source_clip.wav \
+  --model medium --output_format txt --output_dir .
+
+# 4. Clone the voice you want to narrate IN (separate audio file ≥60s)
+voiceforge clone narrator ./narrator_60s.wav
+
+# 5. Narrate the transcript in that voice
+voiceforge note --voice narrator --in source_clip.txt --out narrated.wav
+```
+
+Step 5 is overnight-class for 30-minute source audio — see the Speed Expectations section below for honest wall-clock numbers. Sweet spot today is 1-5 minute clips. v0.5 will collapse this whole chain into `voiceforge audiobook --source <url|file> --voice X --out file.wav`.
 
 ### 6. Pipe NDJSON events from any tool into the daemon
 
@@ -237,14 +266,14 @@ Opt-in visual mirror so you don't miss reactions when AirPods are off, audio is 
 
 ### Two quality tiers
 
-|                    | **Live cloning** (default) | **Pre-rendered packs**                                       |
-| ------------------ | -------------------------- | ------------------------------------------------------------ |
-| Backend            | GPT-SoVITS v2              | fish-speech S2 Pro                                           |
-| Speaks             | arbitrary text             | curated phrases (build_failed, tests_passed, …)              |
-| Latency            | ~2 sec / phrase            | **~50 ms** (just plays a WAV)                                |
-| Quality on cartoon | OK                         | **genuinely recognizable** (Peter Griffin, Stewie, Quagmire) |
-| Render cost        | per-phrase at runtime      | one-time, ~10 min/phrase on a Mac CPU                        |
-| GPU needed?        | no                         | no — CPU works, GPU is faster                                |
+|                    | **Live cloning** (default)                                | **Pre-rendered packs**                                       |
+| ------------------ | --------------------------------------------------------- | ------------------------------------------------------------ |
+| Backend            | fish-speech S2 Pro (v0.4.2 default)                       | pre-rendered WAVs (rendered once with fish-speech S2 Pro)    |
+| Speaks             | arbitrary text                                            | curated phrases (build_failed, tests_passed, …)              |
+| Latency            | ~1 min / short phrase on MPS (Apple Silicon)              | **~50 ms** (just plays a WAV)                                |
+| Quality on cartoon | OK                                                        | **genuinely recognizable** (Peter Griffin, Stewie, Quagmire) |
+| Render cost        | ~20 s of synth per 1 s of audio on MPS (see §Speed)       | one-time, ~3 min/phrase on a Mac M-series                    |
+| GPU needed?        | no — Apple Silicon MPS is the default, CPU fallback works | no                                                           |
 
 **For arbitrary text you write yourself, use live cloning.** For terminal feedback (a fixed set of events) where you want best-in-class character voice quality, **render a pack once, ship the WAVs**. Anyone can render their own packs locally — see [`docs/PACK_RENDERING.md`](docs/PACK_RENDERING.md).
 
@@ -310,7 +339,7 @@ voiceforge shell-init --install zsh   # idempotent; one-time
 voiceforge play --pack peter --event tests_passed
 ```
 
-Each surface ships today (ROADMAP 1.8 / 1.9 / 3.3 / 3.1 / 6.5). The daemon does voice routing automatically — pre-rendered packs play in ~50ms, live cloning in ~2-3s, embedded fallback in <500ms.
+Each surface ships today (ROADMAP 1.8 / 1.9 / 3.3 / 3.1 / 6.5). The daemon does voice routing automatically — pre-rendered packs play in ~50ms, live cloning at studio quality (see Speed Expectations for wall-clock numbers — the trade-off for "no cloud" is "not instant"), embedded fallback in <500ms.
 
 When your agent is doing 20 minutes of background work and finally finishes a deploy, you hear Peter announce it from the kitchen. That's the whole pitch.
 
@@ -339,6 +368,14 @@ test result: FAILED. 3 passed; 1 failed
 
 ## Quick start
 
+> **Before you start:** VoiceForge is macOS arm64 today (Linux is roadmapped, not shipped), and the one-time cloning install pulls ~12 GB of model weights. Bring an M-series Mac and a decent connection.
+>
+> - **Platform:** macOS arm64 only (M1 / M2 / M3 / M4). Linux on the roadmap.
+> - **Disk:** ~12 GB free for `voiceforge install-cloning` (fish-speech S2 Pro weights dominate).
+> - **CPU/GPU:** M-series strongly recommended — MPS is the v0.4.2 default and is ~3× faster than CPU fallback. `VOICEFORGE_FISH_SYNTH_DEVICE=cpu` forces CPU if you're on a memory-constrained 16 GB machine.
+> - **For URL ingest** (clone from YouTube/etc.): `brew install yt-dlp` separately. We shell out to it.
+> - **First-time `install-cloning`:** ~20-60 min depending on your link speed — model download dominates.
+
 **Step 1 — install the binary.** Two paths, same binary. Curl is recommended for first-time installs because it auto-strips the macOS Gatekeeper quarantine bit; the Homebrew binary is currently unsigned (notarization queued as ROADMAP 5.2.1) and triggers an "Apple cannot verify" dialog on first launch.
 
 ```bash
@@ -358,7 +395,7 @@ The `humancto.github.io` URL above and the equivalent `https://raw.githubusercon
 
 That alone gets you `voiceforge run -- <cmd>` reactions in the OS default voice (`say` on macOS, `espeak-ng` on Linux), plus the entire pack ecosystem (`voiceforge pack install peter && voiceforge play --pack peter --event build_failed`). For voice cloning from your own audio, continue:
 
-**Step 2 — install the cloning runtime** (~10 min, ~1.7 GB; macOS arm64 only for now):
+**Step 2 — install the cloning runtime** (~20-60 min depending on connection, ~12 GB; macOS arm64 only for now):
 
 ```bash
 voiceforge install-cloning
@@ -379,7 +416,7 @@ voiceforge say --voice peter --text "Holy crap, the build is on fire."
 voiceforge run --voice peter -- npm test    # speaks on success/failure
 ```
 
-That's the full flow. Each `voiceforge run` invocation pays one ~15 s model-load cold-start; subsequent reactions in the same process are warm (~3 s synth on CPU).
+That's the full flow. Each `voiceforge run` invocation pays one ~30-90 s model-load cold-start (fish-speech S2 Pro is a heavier model than the v0.3 GPT-SoVITS path); subsequent reactions in the same process are warm — short phrases take ~1 min on MPS, ~3 min on CPU. For long-form (`voiceforge note`), see Speed Expectations below.
 
 ### Sourcing audio
 
@@ -448,8 +485,8 @@ Two layers, all local:
                 │
                 ▼
        ┌─────────────────────┐         ┌──────────────────────────┐
-       │ apps/voiceforge-cli │         │ scripts/cloning_synth.py │
-       │ (Rust, async tokio) │  ──►    │ (Python, GPT-SoVITS v2)  │
+       │ apps/voiceforge-cli │         │ scripts/fish_speech_synth.py │
+       │ (Rust, async tokio) │  ──►    │ (Python, fish-speech S2 Pro) │
        │                     │  NDJSON │                          │
        │ rule engine         │  stdin  │ lazy load                │
        │ engine facade       │  stdout │ 1 main + 5 aux refs      │
@@ -466,6 +503,23 @@ Two layers, all local:
                 ▼
                 🔊  speakers go brrrr
 ```
+
+## Speed expectations
+
+Here's what "walk away and come back" actually means in wall-clock. Studio-quality cloning is not instant — that's the trade we made for "no cloud, no accounts".
+
+| Use case                        | Output length | MPS wall-clock | CPU wall-clock |
+| ------------------------------- | ------------- | -------------- | -------------- |
+| `voiceforge say` short reaction | 1-3 s         | ~20-60 s       | ~1-3 min       |
+| 1-minute voice note             | 60 s          | ~20 min        | ~1 h           |
+| 5-minute summary                | 5 min         | ~1 h 40 min    | ~5 h           |
+| 30-minute chapter               | 30 min        | ~10 h          | ~30 h          |
+
+All numbers measured on an M2 with fish-speech S2 Pro v0.4.2 (Tyson clone, Whisper-verified character-perfect output). Realtime ratios: ~1/20× on MPS, ~1/62× on CPU.
+
+MPS is the default on Apple Silicon as of v0.4.2 (~3× faster than CPU; same model, same quality, same studio cloning). Set `VOICEFORGE_FISH_SYNTH_DEVICE=cpu` to force CPU — useful on memory-constrained 16 GB M-series if MPS pushes you into swap.
+
+The sweet spot today is short reactions (`voiceforge say` for terminal feedback) and 1-5 minute voice notes. Full-chapter narration is overnight-class work; if that's your use case, expect to kick off `voiceforge note` before bed. v0.5 will revisit the MLX backend for a potential 10-30× speedup if upstream stabilises.
 
 ## What's new since v0.2.0 (currently on `main`)
 
@@ -496,24 +550,24 @@ Total: **525 tests green** (post v0.4), clippy + fmt clean. The next tagged rele
 
 CLI subcommands (run any with `--help`):
 
-|                                                  |                                                                                                               |
-| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
-| `voiceforge install-cloning`                     | One-shot install of Python 3.11 + ffmpeg@6 + GPT-SoVITS v2 (`--check`, `--force`, `--uninstall`; macOS arm64) |
-| `voiceforge clone <name> <source>`               | Clone a voice from a local audio file ≥ 60 s                                                                  |
-| `voiceforge say --voice <name> --text "..."`     | One-shot synthesis through embedded / server / cloning engines (auto-routed)                                  |
-| `voiceforge run -- <cmd>`                        | Run a command, react on success/failure with a random line from `events.json`                                 |
-| `voiceforge ingest <input> <output>`             | Transcode any audio source to canonical 22050 Hz mono 16-bit PCM                                              |
-| `voiceforge doctor`                              | 10-check system health (incl. daemon socket probe), JSON via `--json`                                         |
-| `voiceforge voices`                              | List built-in presets + cloned voices, `voices remove <name>` deletes                                         |
-| `voiceforge voices migrate <name>`               | Atomic v1→v2 migration of a GPT-SoVITS voice to fish-speech S2 Pro in place (v0.4)                            |
-| `voiceforge note --voice <n> --in <f> --out <f>` | Render long-form text (markdown or plain) to a narration WAV with resume cache (v0.4)                         |
-| `voiceforge use <name>`                          | Set active default voice in `~/.voiceforge/config.toml`                                                       |
-| `voiceforge daemon`                              | Unix-socket NDJSON server at `~/.voiceforge/voiceforge.sock` (ROADMAP 1.8)                                    |
-| `voiceforge send <event> [--text ...]`           | One-shot daemon client; exits 0/1/2/4 on outcome (ROADMAP 1.9)                                                |
-| `voiceforge hook [--profile claude-code]`        | Pipe NDJSON events from AI agents into the daemon (ROADMAP 3.3)                                               |
-| `voiceforge shell-init <zsh\|bash> --install`    | Idempotent shell hook install for command-success/fail events (ROADMAP 3.1)                                   |
-| `voiceforge play --pack <name> --event <id>`     | Sub-100ms playback of pre-rendered pack WAVs (ROADMAP 6.5)                                                    |
-| `voiceforge pack {list,install,remove,info}`     | Manage installed voice packs from the static index (ROADMAP 6.2)                                              |
+|                                                  |                                                                                                                                                                                       |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `voiceforge install-cloning`                     | One-shot install of Python 3.11 + ffmpeg@6 + fish-speech S2 Pro (v0.4.2 default; GPT-SoVITS v1/v2 markers still migrate-supported) (`--check`, `--force`, `--uninstall`; macOS arm64) |
+| `voiceforge clone <name> <source>`               | Clone a voice from a local audio file ≥ 60 s                                                                                                                                          |
+| `voiceforge say --voice <name> --text "..."`     | One-shot synthesis through embedded / server / cloning engines (auto-routed)                                                                                                          |
+| `voiceforge run -- <cmd>`                        | Run a command, react on success/failure with a random line from `events.json`                                                                                                         |
+| `voiceforge ingest <input> <output>`             | Transcode any audio source to canonical 22050 Hz mono 16-bit PCM                                                                                                                      |
+| `voiceforge doctor`                              | 10-check system health (incl. daemon socket probe), JSON via `--json`                                                                                                                 |
+| `voiceforge voices`                              | List built-in presets + cloned voices, `voices remove <name>` deletes                                                                                                                 |
+| `voiceforge voices migrate <name>`               | Atomic v1→v2 migration of a GPT-SoVITS voice to fish-speech S2 Pro in place (v0.4)                                                                                                    |
+| `voiceforge note --voice <n> --in <f> --out <f>` | Render long-form text (markdown or plain) to a narration WAV with resume cache (v0.4)                                                                                                 |
+| `voiceforge use <name>`                          | Set active default voice in `~/.voiceforge/config.toml`                                                                                                                               |
+| `voiceforge daemon`                              | Unix-socket NDJSON server at `~/.voiceforge/voiceforge.sock` (ROADMAP 1.8)                                                                                                            |
+| `voiceforge send <event> [--text ...]`           | One-shot daemon client; exits 0/1/2/4 on outcome (ROADMAP 1.9)                                                                                                                        |
+| `voiceforge hook [--profile claude-code]`        | Pipe NDJSON events from AI agents into the daemon (ROADMAP 3.3)                                                                                                                       |
+| `voiceforge shell-init <zsh\|bash> --install`    | Idempotent shell hook install for command-success/fail events (ROADMAP 3.1)                                                                                                           |
+| `voiceforge play --pack <name> --event <id>`     | Sub-100ms playback of pre-rendered pack WAVs (ROADMAP 6.5)                                                                                                                            |
+| `voiceforge pack {list,install,remove,info}`     | Manage installed voice packs from the static index (ROADMAP 6.2)                                                                                                                      |
 
 Other shipped infrastructure:
 
@@ -557,9 +611,11 @@ VoiceForge ships the cloning pipeline. Whatever WAV you point it at, that's what
 - **Stylized cartoon/character voices** (Peter Griffin, Stewie, Quagmire) → ~70% zero-shot. Recognizable but not Seth-MacFarlane-grade. Open-source zero-shot has a model-imposed ceiling for hyper-stylized timbres.
 - **Fine-tuning** (20–30 min of clean dialogue + transcripts, 30–60 min training on a free Colab GPU) is the path to ~99% on character voices. On the roadmap, not shipped.
 
-### Why GPT-SoVITS v2 (vs XTTS, F5-TTS, OpenVoice, Tortoise)?
+### Why fish-speech S2 Pro (vs GPT-SoVITS v2, XTTS, F5-TTS, OpenVoice, Tortoise)?
 
-We A/B-tested them all. GPT-SoVITS v2 with the multi-aux-ref recipe (1 main + 5 aux × 10 s, Whisper-transcribed) was the clear winner: faster than Tortoise, sharper than XTTS, more stable than F5-TTS for English, ~250 MB models vs Tortoise's gigabytes. v2Pro and v4 didn't earn their extra cost on short reaction lines.
+We A/B-tested them all and shipped GPT-SoVITS v2 first (v0.2 → v0.3). It was the right call for short reaction lines — small models, fast on CPU, stable. But the v0.4 pivot to long-form narration (`voiceforge note`, audiobook-style use cases) made the quality ceiling matter more than the latency floor. fish-speech S2 Pro on Whisper-verified A/Bs of the same Peter Griffin / Tyson / Trump references was clearly closer to the source — sharper consonants, fewer "spacey" prosody artefacts, more reliable on full sentences. The trade is real: fish-speech is a ~1.5B-param DualAR transformer (~10 GB weights vs GPT-SoVITS's ~250 MB) and synth is ~20-60× slower per second of audio. We took the trade because the long-form use case demands it.
+
+v0.4.2 added MPS as the default device on Apple Silicon (~3× faster than CPU). GPT-SoVITS v2 markers from v0.2 / v0.3 still install — `voiceforge voices migrate <name>` upgrades a v1 voice profile to the v2 (fish-speech) schema in-place without re-cloning the source audio.
 
 ## Contributing
 
